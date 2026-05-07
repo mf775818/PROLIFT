@@ -1,0 +1,9 @@
+{
+  "name": "ProLift AI 6.0",
+  "description": "Elite biomechanics analysis platform powered by Gemini. Upload lift videos for real-time skeletal tracking, velocity metrics, and AI coaching.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
