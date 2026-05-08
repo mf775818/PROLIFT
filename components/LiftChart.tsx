@@ -126,6 +126,34 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       setZoomDomain(null);
   }, [data]);
 
+  // --- 工業級：事件驅動與防抖重繪 (Event-Driven Debounced Resize) ---
+  const [resizeTick, setResizeTick] = useState(0);
+  const debounceTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+      if (!chartContainerRef.current) return;
+
+      // 訂閱瀏覽器原生尺寸變更事件 (非輪詢迴圈)
+      const resizeObserver = new ResizeObserver(() => {
+          // 只要事件還在連續觸發(例如使用者正在拖拉)，就取消上一次的重繪排程
+          if (debounceTimerRef.current) {
+              window.clearTimeout(debounceTimerRef.current);
+          }
+          
+          // 只有當使用者「停止拖拉」超過 150 毫秒後，才派發唯一一次的更新信號
+          debounceTimerRef.current = window.setTimeout(() => {
+              setResizeTick(Date.now());
+          }, 150);
+      });
+
+      resizeObserver.observe(chartContainerRef.current);
+
+      return () => {
+          resizeObserver.disconnect();
+          if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
+      };
+  }, []);
+
   const handleExportCSV = () => {
     if (!processedData || processedData.length === 0) return;
 
@@ -234,6 +262,8 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       setZoomDomain({ min: newMin, max: newMax });
   };
   
+  // 【工業級修復 1】: 獨立的拖曳狀態記憶體，不受生命週期與渲染影響
+  const hasDraggedRef = useRef<boolean>(false);
   const dragStartRef = useRef<{ x: number, y: number, min: number, max: number, moved: boolean } | null>(null);
   
   const getCoordinates = (e: React.MouseEvent | React.TouchEvent | React.PointerEvent) => {
@@ -255,14 +285,22 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
           max: currentZoom.max,
           moved: false
       };
+      // 每次按下時，重置拖曳記憶
+      hasDraggedRef.current = false; 
   };
 
   const handlePointerMove = (e: React.PointerEvent | React.TouchEvent | React.MouseEvent) => {
+      // 嚴格攔截：如果沒有按下錨點，絕對不執行拖曳運算
       if (!dragStartRef.current || !zoomDomain || !chartContainerRef.current) return;
       
       const coords = getCoordinates(e);
       const dx = coords.x - dragStartRef.current.x;
-      if (Math.abs(dx) > 5) dragStartRef.current.moved = true;
+      
+      if (Math.abs(dx) > 5) {
+          dragStartRef.current.moved = true;
+          // 【工業級修復 2】: 只要移動超過 5px，就死鎖標記為「已拖曳」
+          hasDraggedRef.current = true; 
+      }
 
       const width = chartContainerRef.current.clientWidth;
       const domainRange = zoomDomain.max - zoomDomain.min;
@@ -289,31 +327,26 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       setZoomDomain({ min: newMin, max: newMax });
   };
 
+  const handlePointerUp = (e: React.PointerEvent | React.TouchEvent | React.MouseEvent) => {
+      // 【工業級修復 3】: 徹底釋放拖曳錨點！防止單純 Hover 時觸發幽靈拖曳導致回彈
+      dragStartRef.current = null;
+  };
+
   const handleChartClick = (nextState: any) => {
-      // 1. 若使用者正在拖曳(Zoom/Pan)圖表，則忽略點擊，避免干擾
-      if (dragStartRef.current && dragStartRef.current.moved) return;
+      // 【工業級修復 4】: 透過獨立的 hasDraggedRef 攔截。
+      // 即使 dragStartRef 已被清除，我們依然記得剛剛是不是在拖曳，完美解決競態條件。
+      if (hasDraggedRef.current) return;
 
       if (onSeekToTime && nextState) {
-          // 優先：精準點擊到實體資料節點或線條上 (所有圖表皆適用，包含軌跡圖)
+          // 優先度 1：精準點擊在資料線上
           if (nextState.activePayload && nextState.activePayload.length > 0) {
               onSeekToTime(nextState.activePayload[0].payload.timeVal);
           } 
-          // 備案：點擊在圖表區的空白處 (Recharts 的 activeLabel 會直接幫我們精準映射到 X 軸的準確時間)
-          // 注意：排除軌跡圖 ('trajectory')，因為它的 X 軸是位移(cm)，不是時間。
+          // 優先度 2：點擊在圖表空白處 (軌跡圖除外，因其 X 軸不是時間)
           else if (mode !== 'trajectory' && nextState.activeLabel !== undefined) {
               onSeekToTime(Number(nextState.activeLabel));
           }
       }
-  };
-
-  const handlePointerUp = (e: React.PointerEvent | React.TouchEvent | React.MouseEvent) => {
-      // 【架構師閹割區】
-      // 徹底刪除舊有的「手動座標轉時間」的計算邏輯，消除與 Recharts SVG 渲染的公差。
-      // 將精準跳轉的工作完全委託給上方的 handleChartClick。
-      
-      // 注意：這裡不設 dragStartRef.current = null;
-      // 因為 onClick 事件會在 pointerup 之後才觸發，它需要讀取 moved 狀態來判斷是不是拖曳操作。
-      // dragStartRef 會在下一次點擊 (handlePointerDown) 時自動重新初始化。
   };
   
   const handleDoubleClick = (e: React.MouseEvent) => {
@@ -418,6 +451,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
           </button>
       )}
 
+      {/* 絕對不要在這裡加 key，保護所有的滑鼠交互事件 (onPointerDown 等) 不被銷毀 */}
       <div 
          ref={chartContainerRef}
          className={`flex-1 w-full min-h-0 relative ${zoomDomain ? 'cursor-ew-resize' : 'cursor-pointer'} touch-none`}
@@ -429,7 +463,8 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
          onPointerCancel={handlePointerUp}
          onDoubleClick={handleDoubleClick}
       >
-          <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+          {/* 將 resizeTick 交給 ResponsiveContainer，只在拖曳結束後讓圖表引擎重新計算一次座標 */}
+          <ResponsiveContainer key={`rc-engine-${resizeTick}`} width="100%" height="100%" minWidth={1} minHeight={1}>
           {mode === 'kinematics' ? (
             <ComposedChart data={processedData} onMouseMove={handleTooltip} onClick={handleChartClick} margin={{ top: 5, right: 35, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
@@ -520,14 +555,12 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
               <Line name="Ankle" type="monotone" dataKey="ankleAngle" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} />
               <Line name="Back" type="monotone" dataKey="backAngle" stroke="#a78bfa" strokeWidth={2} dot={false} isAnimationActive={false} />
             </LineChart>
-          ) : (
-            // TRAJECTORY CHART
+          ) : mode === 'trajectory' ? (
             <ScatterChart 
-                margin={{ top: 5, right: 10, bottom: 5, left: 0 }}
-                onMouseMove={handleTooltip}
-                onClick={handleChartClick}
+                margin={{ top: 20, right: 20, bottom: 20, left: 20 }}
+                // 注意：軌跡圖內部不綁定滑鼠事件，全交給外層 div 處理
             >
-               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
                <XAxis 
                    type="number" 
                    dataKey="xDev" 
@@ -566,6 +599,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                        fill="#facc15" 
                        stroke="white" 
                        strokeWidth={2} 
+                       isAnimationActive={false} // 確保不產生漂移殘影
                    />
                )}
                
@@ -577,6 +611,9 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                    isAnimationActive={false}
                />
             </ScatterChart>
+          ) : (
+             // Fallback or other modes
+             <div />
           )}
         </ResponsiveContainer>
       </div>
