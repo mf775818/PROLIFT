@@ -208,37 +208,82 @@ const cleanSkeletonData = (rawFrames: RawFrameData[]) => {
 };
 
 // --- ADVANCED COMPRESSION: Ramer-Douglas-Peucker Algorithm ---
-const perpendicularDistance = (pt: LiftMetrics, lineStart: LiftMetrics, lineEnd: LiftMetrics) => {
-    let dx = lineEnd.x - lineStart.x;
-    let dy = lineEnd.y - lineStart.y;
-    const mag = Math.sqrt(dx * dx + dy * dy);
-    if (mag > 0) { dx /= mag; dy /= mag; } else { dx = 0; dy = 0; }
-    const pvx = pt.x - lineStart.x;
-    const pvy = pt.y - lineStart.y;
-    const pvdot = pvx * dx + pvy * dy;
-    const dsx = pvdot * dx;
-    const dsy = pvdot * dy;
-    const ax = pvx - dsx;
-    const ay = pvy - dsy;
-    return Math.sqrt(ax * ax + ay * ay);
+const perpendicularDistanceSq = (pt: LiftMetrics, lineStart: LiftMetrics, lineEnd: LiftMetrics) => {
+    const dx = lineEnd.x - lineStart.x;
+    const dy = lineEnd.y - lineStart.y;
+    const lineMagSq = dx * dx + dy * dy;
+    
+    if (lineMagSq === 0) {
+        const pdx = pt.x - lineStart.x;
+        const pdy = pt.y - lineStart.y;
+        return pdx * pdx + pdy * pdy;
+    }
+    
+    const crossProduct = dx * (lineStart.y - pt.y) - (lineStart.x - pt.x) * dy;
+    return (crossProduct * crossProduct) / lineMagSq;
 };
 
 const rdpCompress = (points: LiftMetrics[], epsilon: number): LiftMetrics[] => {
-    if (points.length < 3) return points;
-    let dmax = 0;
+    const n = points.length;
+    if (n < 3) return points;
+
+    const epsilonSq = epsilon * epsilon;
+
+    // Use a flat Uint8Array to mark points to keep (O(N) memory allocation instead of O(N log N) recursive slicing)
+    const keep = new Uint8Array(n);
+    keep[0] = 1;
+    keep[n - 1] = 1;
+
+    // Iterative stack pre-allocated to avoid array resizing overhead
+    const stack = new Int32Array(n);
+    let top = 0;
+    
+    // push initial range
+    stack[top++] = 0;
+    stack[top++] = n - 1;
+
+    let dmaxSq = 0;
     let index = 0;
-    const end = points.length - 1;
-    for (let i = 1; i < end; i++) {
-        const d = perpendicularDistance(points[i], points[0], points[end]);
-        if (d > dmax) { index = i; dmax = d; }
+
+    while (top > 0) {
+        const endIndex = stack[--top];
+        const startIndex = stack[--top];
+
+        dmaxSq = 0;
+        index = startIndex;
+
+        const pStart = points[startIndex];
+        const pEnd = points[endIndex];
+
+        // Find the point with the maximum distance
+        for (let i = startIndex + 1; i < endIndex; i++) {
+            const dSq = perpendicularDistanceSq(points[i], pStart, pEnd);
+            if (dSq > dmaxSq) {
+                index = i;
+                dmaxSq = dSq;
+            }
+        }
+
+        // If max distance is greater than epsilon, recursively simplify
+        if (dmaxSq > epsilonSq) {
+            keep[index] = 1;
+            // Push right half
+            stack[top++] = index;
+            stack[top++] = endIndex;
+            // Push left half
+            stack[top++] = startIndex;
+            stack[top++] = index;
+        }
     }
-    if (dmax > epsilon) {
-        const res1 = rdpCompress(points.slice(0, index + 1), epsilon);
-        const res2 = rdpCompress(points.slice(index), epsilon);
-        return res1.slice(0, -1).concat(res2);
-    } else {
-        return [points[0], points[end]];
+
+    // Filter points based on the 'keep' array mapping
+    const result: LiftMetrics[] = [];
+    for (let i = 0; i < n; i++) {
+        if (keep[i] === 1) {
+            result.push(points[i]);
+        }
     }
+    return result;
 };
 
 // ... (Classes RTSSmoother and OpenCVTracker retained)
@@ -307,84 +352,99 @@ class OpenCVTracker {
         const cv = g_cv || (window as any).cv;
         if (!cv || !cv.Mat || !this.isInitialized) return null;
         
-        const src = cv.imread(ctx.canvas); 
-        const nextGray = new cv.Mat(); 
-        cv.cvtColor(src, nextGray, cv.COLOR_RGBA2GRAY, 0); 
-        this.clahe.apply(nextGray, nextGray);
+        let src, nextGray, nextPts, status, err, newPtsMat;
         
-        const nextPts = new cv.Mat(); 
-        const status = new cv.Mat(); 
-        const err = new cv.Mat(); 
-        
-        // Window size 31x31 allows for robust tracking even with mobile frame drops
-        const winSize = new cv.Size(31, 31);
-        
-        cv.calcOpticalFlowPyrLK(
-            this.prevGray, nextGray, this.prevPts, nextPts, status, err, winSize, 6, 
-            new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 30, 0.01)
-        );
+        try {
+            src = cv.imread(ctx.canvas); 
+            nextGray = new cv.Mat(); 
+            nextPts = new cv.Mat(); 
+            status = new cv.Mat(); 
+            err = new cv.Mat(); 
+            
+            cv.cvtColor(src, nextGray, cv.COLOR_RGBA2GRAY, 0); 
+            this.clahe.apply(nextGray, nextGray);
+            
+            // Window size 31x31 allows for robust tracking even with mobile frame drops
+            const winSize = new cv.Size(31, 31);
+            
+            cv.calcOpticalFlowPyrLK(
+                this.prevGray, nextGray, this.prevPts, nextPts, status, err, winSize, 6, 
+                new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 30, 0.01)
+            );
 
-        // --- INDUSTRIAL FIX: Adaptive Point Pruning & Absolute Update ---
-        const validX: number[] = [];
-        const validY: number[] = [];
-        const keptPointsData: number[] = [];
-        let validCount = 0;
+            // --- INDUSTRIAL FIX: Adaptive Point Pruning & GC Relief ---
+            const totalPoints = status.rows;
+            const validX = new Float32Array(totalPoints);
+            const validY = new Float32Array(totalPoints);
+            const keptPointsData = new Float32Array(totalPoints * 2);
+            let validCount = 0;
 
-        for (let i = 0; i < status.rows; i++) {
-            if (status.data[i] === 1) {
-                const p0x = this.prevPts.data32F[i * 2];
-                const p0y = this.prevPts.data32F[i * 2 + 1];
-                const p1x = nextPts.data32F[i * 2];
-                const p1y = nextPts.data32F[i * 2 + 1];
+            for (let i = 0; i < totalPoints; i++) {
+                if (status.data[i] === 1) {
+                    const p0x = this.prevPts.data32F[i * 2];
+                    const p0y = this.prevPts.data32F[i * 2 + 1];
+                    const p1x = nextPts.data32F[i * 2];
+                    const p1y = nextPts.data32F[i * 2 + 1];
 
-                if (p1x >= 0 && p1x <= ctx.canvas.width && p1y >= 0 && p1y <= ctx.canvas.height) {
-                    const dx = p1x - p0x;
-                    const dy = p1y - p0y;
-                    
-                    if (dx * dx + dy * dy < 250000) {
-                        validX.push(dx);
-                        validY.push(dy);
-                        keptPointsData.push(p1x);
-                        keptPointsData.push(p1y);
-                        validCount++;
+                    if (p1x >= 0 && p1x <= ctx.canvas.width && p1y >= 0 && p1y <= ctx.canvas.height) {
+                        const dx = p1x - p0x;
+                        const dy = p1y - p0y;
+                        
+                        if (dx * dx + dy * dy < 250000) {
+                            validX[validCount] = dx;
+                            validY[validCount] = dy;
+                            keptPointsData[validCount * 2] = p1x;
+                            keptPointsData[validCount * 2 + 1] = p1y;
+                            validCount++;
+                        }
                     }
                 }
             }
-        }
 
-        if (validCount > 0) {
-            validX.sort((a, b) => a - b);
-            validY.sort((a, b) => a - b);
-            const medianX = validX[Math.floor(validX.length / 2)];
-            const medianY = validY[Math.floor(validY.length / 2)];
+            if (validCount > 0) {
+                const xSub = validX.subarray(0, validCount);
+                const ySub = validY.subarray(0, validCount);
+                xSub.sort(); // TypedArray sort is inherently numeric
+                ySub.sort();
+                const medianX = xSub[Math.floor(validCount / 2)];
+                const medianY = ySub[Math.floor(validCount / 2)];
+                
+                if (this.currentROI) {
+                    this.currentROI.x += medianX;
+                    this.currentROI.y += medianY;
+                }
+
+                if (this.prevPts) this.prevPts.delete();
+                newPtsMat = new cv.Mat(validCount, 1, cv.CV_32FC2);
+                for (let k = 0; k < validCount; k++) {
+                    newPtsMat.data32F[k * 2] = keptPointsData[k * 2];
+                    newPtsMat.data32F[k * 2 + 1] = keptPointsData[k * 2 + 1];
+                }
+                this.prevPts = newPtsMat;
+                if (this.prevGray) this.prevGray.delete();
+                this.prevGray = nextGray;
+                nextGray = null; // Prevent deletion in finally
+            } else {
+                this.isInitialized = false;
+            }
             
-            if (this.currentROI) {
-                this.currentROI.x += medianX;
-                this.currentROI.y += medianY;
-            }
-
-            this.prevPts.delete();
-            const newPtsMat = new cv.Mat(validCount, 1, cv.CV_32FC2);
-            for (let k = 0; k < validCount; k++) {
-                newPtsMat.data32F[k * 2] = keptPointsData[k * 2];
-                newPtsMat.data32F[k * 2 + 1] = keptPointsData[k * 2 + 1];
-            }
-            this.prevPts = newPtsMat;
-            this.prevGray.delete();
-            this.prevGray = nextGray;
-        } else {
-            this.isInitialized = false;
-            nextGray.delete();
+            return this.currentROI ? { ...this.currentROI } : null;
+        } catch (e) {
+            console.error("OpenCV Tracking Error", e);
+            return null;
+        } finally {
+            if (src) src.delete();
+            if (nextGray) nextGray.delete();
+            if (nextPts) nextPts.delete();
+            if (status) status.delete();
+            if (err) err.delete();
         }
-        
-        nextPts.delete(); status.delete(); err.delete(); src.delete();
-        return this.currentROI ? { ...this.currentROI } : null;
     }
     
     destroy() { if (this.prevGray) this.prevGray.delete(); if (this.prevPts) this.prevPts.delete(); if (this.clahe) this.clahe.delete(); this.isInitialized = false; }
 }
 
-export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({ 
+export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({ 
   videoFile, 
   onMetricsUpdate, 
   onAnalysisComplete,
@@ -397,9 +457,12 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const pathCanvasRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const processingVideoRef = useRef<HTMLVideoElement>(document.createElement('video'));
   
+  const lastRenderedIndexRef = useRef<number>(-1);
+
   const onResetRef = useRef(onReset);
   useEffect(() => { onResetRef.current = onReset; }, [onReset]);
   
@@ -424,6 +487,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
 
   const fullLiftHistory = useRef<LiftMetrics[]>([]);
   const compressedLiftHistory = useRef<LiftMetrics[]>([]);
+  const renderCommandsRef = useRef<{ color: string, x: number, y: number, time: number }[]>([]);
   const startXRef = useRef<number>(0); 
   const startYRef = useRef<number>(0); 
   const pixelToMeterRef = useRef<number>(0.0025); 
@@ -551,6 +615,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
       setProgress(0);
       fullLiftHistory.current = [];
       compressedLiftHistory.current = [];
+      renderCommandsRef.current = [];
+      lastRenderedIndexRef.current = -1;
+      const pathCtx = pathCanvasRef.current?.getContext('2d');
+      if (pathCtx && pathCanvasRef.current) pathCtx.clearRect(0, 0, pathCanvasRef.current.width, pathCanvasRef.current.height);
+      const overlayCtx = canvasRef.current?.getContext('2d');
+      if (overlayCtx && canvasRef.current) overlayCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
       rawDataRef.current = [];
       startXRef.current = 0;
       setIsPlaying(false);
@@ -1039,8 +1110,21 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
     const highResMetrics = upsampleData(metrics, 4);
     // Advanced Compression: RDP simplifies the path while keeping the shape perfectly
     const compressedMetrics = rdpCompress(highResMetrics, 0.0005); 
-    maxVelocityRef.current = maxVel; fullLiftHistory.current = highResMetrics;
+    maxVelocityRef.current = maxVel; 
+    fullLiftHistory.current = metrics;
     compressedLiftHistory.current = compressedMetrics;
+    
+    // --- PRECOMPUTE RENDERING COMMANDS ---
+    const precomputed = compressedMetrics.map(curr => {
+        const time = typeof curr.time === 'string' ? parseFloat(curr.time) : curr.time;
+        const ratio = clamp(curr.velocity / maxVel, 0, 1);
+        const color = getHeatColor(ratio * maxVel, 0, maxVel);
+        return { x: curr.x, y: curr.y, time, color };
+    });
+    renderCommandsRef.current = precomputed;
+    lastRenderedIndexRef.current = -1;
+    const pathCtx = pathCanvasRef.current?.getContext('2d');
+    if (pathCtx && pathCanvasRef.current) pathCtx.clearRect(0,0, pathCanvasRef.current.width, pathCanvasRef.current.height);
     
     if (videoRef.current) {
         try {
@@ -1053,7 +1137,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
         }
     }
     
-    setAnalysisState(AnalysisState.COMPLETE); onAnalysisCompleteRef.current(compressedMetrics); onMetricsUpdateRef.current(highResMetrics[0], highResMetrics);
+    setAnalysisState(AnalysisState.COMPLETE); 
+    onAnalysisCompleteRef.current(metrics);
+    onMetricsUpdateRef.current(metrics[0], metrics);
   };
 
   const rafIdRef = useRef<number | null>(null);
@@ -1100,9 +1186,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
 
      drawOverlay(closest, closestIdx, rawFrame?.landmarks);
 
-     // Throttle React state updates to ~15fps to avoid freezing the UI
+     // Now that we use imperative DOM updates instead of React state, we can run at 30-60fps
      const now = performance.now();
-     if (now - lastMetricsUpdateTimeRef.current > 66) {
+     if (now - lastMetricsUpdateTimeRef.current > 33) {
          onMetricsUpdateRef.current(closest, history);
          lastMetricsUpdateTimeRef.current = now;
      }
@@ -1125,19 +1211,22 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
   };
 
   const drawOverlay = (metric: LiftMetrics, currentIndex: number, landmarks?: Keypoint[]) => {
-      const canvas = canvasRef.current; const ctx = canvas?.getContext('2d'); if (!canvas || !ctx) return;
-      const w = canvas.width; const h = canvas.height; ctx.clearRect(0,0,w,h);
+      const overlayCanvas = canvasRef.current; const overlayCtx = overlayCanvas?.getContext('2d'); if (!overlayCanvas || !overlayCtx) return;
+      const pathCanvas = pathCanvasRef.current; const pathCtx = pathCanvas?.getContext('2d'); if (!pathCanvas || !pathCtx) return;
+      const w = overlayCanvas.width; const h = overlayCanvas.height; 
+      
+      overlayCtx.clearRect(0,0,w,h);
 
       if (landmarks && window.drawConnectors && window.drawLandmarks) {
-         ctx.save(); ctx.globalAlpha = 0.5; 
-         window.drawConnectors(ctx, landmarks, window.POSE_CONNECTIONS, { color: 'rgba(255,255,255,0.6)', lineWidth: 2 });
-         window.drawLandmarks(ctx, landmarks, { color: '#ffffff', lineWidth: 1, radius: 2 });
-         ctx.restore();
-         const fontSize = Math.max(12, w * 0.025); ctx.font = `bold ${fontSize}px sans-serif`; ctx.textBaseline = 'middle';
+         overlayCtx.save(); overlayCtx.globalAlpha = 0.5; 
+         window.drawConnectors(overlayCtx, landmarks, window.POSE_CONNECTIONS, { color: 'rgba(255,255,255,0.6)', lineWidth: 2 });
+         window.drawLandmarks(overlayCtx, landmarks, { color: '#ffffff', lineWidth: 1, radius: 2 });
+         overlayCtx.restore();
+         const fontSize = Math.max(12, w * 0.025); overlayCtx.font = `bold ${fontSize}px sans-serif`; overlayCtx.textBaseline = 'middle';
          const drawBadge = (text: string, x: number, y: number, color: string) => {
-             const padding = 4; const metrics = ctx.measureText(text); const bgW = metrics.width + padding * 2; const bgH = fontSize + padding * 2;
-             ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.beginPath(); ctx.roundRect(x, y - bgH/2, bgW, bgH, 4); ctx.fill();
-             ctx.fillStyle = color; ctx.fillText(text, x + padding, y); ctx.restore();
+             const padding = 4; const metrics = overlayCtx.measureText(text); const bgW = metrics.width + padding * 2; const bgH = fontSize + padding * 2;
+             overlayCtx.save(); overlayCtx.fillStyle = 'rgba(0,0,0,0.7)'; overlayCtx.beginPath(); overlayCtx.roundRect(x, y - bgH/2, bgW, bgH, 4); overlayCtx.fill();
+             overlayCtx.fillStyle = color; overlayCtx.fillText(text, x + padding, y); overlayCtx.restore();
          };
          const kneeIdx = landmarks[25].visibility > landmarks[26].visibility ? 25 : 26;
          if (landmarks[kneeIdx].visibility > 0.3) { const val = calculateAngle(landmarks[kneeIdx-2], landmarks[kneeIdx], landmarks[kneeIdx+2]); drawBadge(`K: ${val.toFixed(0)}°`, landmarks[kneeIdx].x * w + 15, landmarks[kneeIdx].y * h, '#facc15'); }
@@ -1165,32 +1254,94 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
       }
 
       const zx = startXRef.current * w; const zy = startYRef.current * h;
-      ctx.beginPath(); ctx.moveTo(zx, 0); ctx.lineTo(zx, h); ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; ctx.setLineDash([4, 4]); ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
-      ctx.beginPath(); ctx.arc(zx, zy, 4, 0, 2*Math.PI); ctx.fillStyle = 'white'; ctx.fill();
+      overlayCtx.beginPath(); overlayCtx.moveTo(zx, 0); overlayCtx.lineTo(zx, h); overlayCtx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; overlayCtx.setLineDash([4, 4]); overlayCtx.lineWidth = 2; overlayCtx.stroke(); overlayCtx.setLineDash([]);
+      overlayCtx.beginPath(); overlayCtx.arc(zx, zy, 4, 0, 2*Math.PI); overlayCtx.fillStyle = 'white'; overlayCtx.fill();
 
-      // --- ADVANCED COMPRESSION RENDERING ---
-      const currentT = parseFloat(metric.time);
-      const compressed = compressedLiftHistory.current; 
-      if (compressed.length > 0) {
-         ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-         for(let i=1; i<compressed.length; i++) { 
-             const prev = compressed[i-1]; const curr = compressed[i]; 
-             if (parseFloat(curr.time) > currentT) {
-                 // Draw the final segment to the exact current position
-                 ctx.beginPath(); ctx.moveTo(prev.x * w, prev.y * h); ctx.lineTo(metric.x * w, metric.y * h); 
-                 ctx.strokeStyle = getHeatColor(metric.velocity, 0, maxVelocityRef.current); 
-                 ctx.stroke(); 
-                 break;
-             }
-             ctx.beginPath(); ctx.moveTo(prev.x * w, prev.y * h); ctx.lineTo(curr.x * w, curr.y * h); 
-             ctx.strokeStyle = getHeatColor(curr.velocity, 0, maxVelocityRef.current); 
-             ctx.stroke(); 
-         }
+      // --- ADVANCED COMPRESSION RENDERING (LTS: LAYERED TIME-STATE ZERO-ALLOCATION) ---
+      const currentT = typeof metric.time === 'string' ? parseFloat(metric.time) : metric.time;
+      const commands = renderCommandsRef.current;
+
+      let targetIdx = 0;
+      if (commands.length > 0) {
+          let left = 0, right = commands.length - 1;
+          while (left <= right) {
+              const mid = Math.floor((left + right) / 2);
+              if (commands[mid].time <= currentT) {
+                  targetIdx = mid;
+                  left = mid + 1;
+              } else {
+                  right = mid - 1;
+              }
+          }
       }
+
+      const lastIdx = lastRenderedIndexRef.current;
+
+      if (commands.length > 1 && targetIdx !== lastIdx) {
+          const delta = targetIdx - lastIdx;
+          pathCtx.lineWidth = 4; pathCtx.lineCap = 'round'; pathCtx.lineJoin = 'round';
+
+          if (delta > 0 && delta <= 30 && lastIdx >= 0) {
+              // Incremental Draw
+              pathCtx.beginPath();
+              pathCtx.moveTo(commands[lastIdx].x * w, commands[lastIdx].y * h);
+              
+              let lastColor = commands[lastIdx].color;
+              for (let i = lastIdx + 1; i <= targetIdx; i++) {
+                  const cmd = commands[i];
+                  if (cmd.color !== lastColor) {
+                      pathCtx.strokeStyle = lastColor;
+                      pathCtx.stroke();
+                      pathCtx.beginPath();
+                      pathCtx.moveTo(commands[i-1].x * w, commands[i-1].y * h);
+                      lastColor = cmd.color;
+                  }
+                  pathCtx.lineTo(cmd.x * w, cmd.y * h);
+              }
+              pathCtx.strokeStyle = lastColor;
+              pathCtx.stroke();
+          } else if (delta < -2 || delta > 30 || lastIdx === -1) {
+              // Full redraw on seek
+              pathCtx.clearRect(0, 0, w, h);
+              if (targetIdx > 0) {
+                  pathCtx.beginPath();
+                  pathCtx.moveTo(commands[0].x * w, commands[0].y * h);
+                  let lastColor = commands[0].color;
+                  for (let i = 1; i <= targetIdx; i++) {
+                      const cmd = commands[i];
+                      if (cmd.color !== lastColor) {
+                          pathCtx.strokeStyle = lastColor;
+                          pathCtx.stroke();
+                          pathCtx.beginPath();
+                          pathCtx.moveTo(commands[i-1].x * w, commands[i-1].y * h);
+                          lastColor = cmd.color;
+                      }
+                      pathCtx.lineTo(cmd.x * w, cmd.y * h);
+                  }
+                  pathCtx.strokeStyle = lastColor;
+                  pathCtx.stroke();
+              }
+          }
+          lastRenderedIndexRef.current = targetIdx;
+      }
+
+      // Draw the "live" segment to the absolute current metric on the overlay so it updates at 60fps
+      if (commands.length > 0 && targetIdx >= 0 && targetIdx < commands.length) {
+          const cmd = commands[targetIdx];
+          if (currentT >= cmd.time) {
+              overlayCtx.beginPath();
+              overlayCtx.moveTo(cmd.x * w, cmd.y * h);
+              overlayCtx.lineTo(metric.x * w, metric.y * h);
+              overlayCtx.strokeStyle = cmd.color;
+              overlayCtx.lineWidth = 4; overlayCtx.lineCap = 'round'; overlayCtx.lineJoin = 'round';
+              overlayCtx.stroke();
+          }
+      }
+
       const cx = metric.x * w; const cy = metric.y * h;
-      ctx.beginPath(); ctx.arc(cx, cy, 8, 0, 2*Math.PI); ctx.fillStyle = '#facc15'; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 2; ctx.fill(); ctx.stroke();
+      overlayCtx.beginPath(); overlayCtx.arc(cx, cy, 8, 0, 2*Math.PI); overlayCtx.fillStyle = '#facc15'; overlayCtx.strokeStyle = 'rgba(0,0,0,0.5)'; overlayCtx.lineWidth = 2; overlayCtx.fill(); overlayCtx.stroke();
       const devCm = (metric.x - startXRef.current) * 200; const devX = cx + 20; const devY = cy;
-      ctx.save(); ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'; ctx.roundRect(devX - 4, devY - 10, 60, 20, 4); ctx.fill(); ctx.fillStyle = devCm > 0 ? '#ef4444' : '#10b981'; ctx.font = 'bold 12px monospace'; ctx.fillText(`${devCm > 0 ? '+' : ''}${devCm.toFixed(1)}cm`, devX, devY + 4); ctx.restore();
+      overlayCtx.save(); overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.7)'; overlayCtx.roundRect(devX - 4, devY - 10, 60, 20, 4); overlayCtx.fill(); overlayCtx.fillStyle = devCm > 0 ? '#ef4444' : '#10b981'; overlayCtx.font = 'bold 12px monospace'; overlayCtx.fillText(`${devCm > 0 ? '+' : ''}${devCm.toFixed(1)}cm`, devX, devY + 4); overlayCtx.restore();
   };
 
   useEffect(() => {
@@ -1311,6 +1462,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
             ref={videoRef}
             src={videoUrl}
             className={`w-full h-full object-contain block ${analysisState === AnalysisState.ANALYZING ? 'opacity-50 blur-sm' : ''}`}
+            style={{ transform: 'translateZ(0)', willChange: 'transform' }}
             // Remove default controls to use custom industrial controls
             controls={false}
             muted={isMuted}
@@ -1326,7 +1478,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
             crossOrigin="anonymous"
           />
           
-          <canvas ref={canvasRef} className="absolute pointer-events-none" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, }} width={videoLayout.width} height={videoLayout.height} />
+          <canvas ref={pathCanvasRef} className="absolute pointer-events-none z-10" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, transform: 'translateZ(0)', willChange: 'transform' }} width={videoLayout.width} height={videoLayout.height} />
+          <canvas ref={canvasRef} className="absolute pointer-events-none z-20" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, transform: 'translateZ(0)', willChange: 'transform' }} width={videoLayout.width} height={videoLayout.height} />
 
           {shouldShowROI && (
               <div 
@@ -1519,4 +1672,4 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = ({
       )}
     </div>
   );
-};
+});

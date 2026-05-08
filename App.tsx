@@ -38,11 +38,11 @@ const Resizer = ({ orientation, onResizeStart, isResizing }: { orientation: 'ver
 };
 
 // Helper component for stat box
-const StatBox = ({ label, value, unit, subColor = "text-zinc-600", valColor = "text-white" }: any) => (
+const StatBox = ({ id, label, value, unit, subColor = "text-zinc-600", valColor = "text-white" }: any) => (
     <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-700/50 flex flex-col justify-between hover:bg-zinc-800 transition-colors">
         <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">{label}</span>
         <div className="flex items-baseline gap-1 mt-1">
-            <span className={`text-xl font-mono font-bold ${valColor}`}>{value}</span>
+            <span id={id} className={`text-xl font-mono font-bold ${valColor}`}>{value}</span>
             <span className={`text-[10px] font-bold ${subColor}`}>{unit}</span>
         </div>
     </div>
@@ -51,20 +51,25 @@ const StatBox = ({ label, value, unit, subColor = "text-zinc-600", valColor = "t
 const App = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   
-  // 'liveMetrics' is what comes from the video player in real-time
   const [liveMetrics, setLiveMetrics] = useState<LiftMetrics>({ time: '0', velocity: 0, height: 0, power: 0, x: 0, y: 0, kneeAngle: 0, hipAngle: 0, ankleAngle: 0, backAngle: 0 });
+  const liveMetricsRef = useRef<LiftMetrics>(liveMetrics);
   
   // 'cursorMetrics' is what comes from hovering the chart
   const [cursorMetrics, setCursorMetrics] = useState<LiftMetrics | null>(null);
+  const cursorMetricsRef = useRef<LiftMetrics | null>(null);
   
   // Stores the entire history of the lift.
   const [allMetrics, setAllMetrics] = useState<LiftMetrics[]>([]);
+  const allMetricsRef = useRef<LiftMetrics[]>([]);
+  useEffect(() => { allMetricsRef.current = allMetrics; }, [allMetrics]);
   
   // Control video seeking from chart
   const [seekRequest, setSeekRequest] = useState<{time: number, nonce: number} | null>(null);
   
   const [isAnalyzingVideo, setIsAnalyzingVideo] = useState(false);
   const [barbellMass, setBarbellMass] = useState(60); 
+  const barbellMassRef = useRef(barbellMass);
+  useEffect(() => { barbellMassRef.current = barbellMass; }, [barbellMass]);
 
   // Mobile Tab State
   const [activeTab, setActiveTab] = useState<'chart' | 'stats'>('stats');
@@ -144,11 +149,32 @@ const App = () => {
 
   const efficiencyScore = calculateEfficiency();
 
+  const handleReset = useCallback(() => {
+    setAllMetrics([]);
+    setCursorMetrics(null);
+    cursorMetricsRef.current = null;
+    const defaultStats = { time: '0', velocity: 0, height: 0, power: 0, x: 0, y: 0, kneeAngle: 0, hipAngle: 0, ankleAngle: 0, backAngle: 0 };
+    setLiveMetrics(defaultStats);
+    liveMetricsRef.current = defaultStats;
+    
+    // Also reset DOM if exist
+    const elVel = document.getElementById('stat-velocity'); if (elVel) elVel.innerText = "0.00";
+    const elPwr = document.getElementById('stat-power'); if (elPwr) elPwr.innerText = "0";
+    const elHgt = document.getElementById('stat-height'); if (elHgt) elHgt.innerText = "0.00";
+    const elKnee = document.getElementById('stat-knee'); if (elKnee) elKnee.innerText = "0";
+    const elHip = document.getElementById('stat-hip'); if (elHip) elHip.innerText = "0";
+    const elAnkle = document.getElementById('stat-ankle'); if (elAnkle) elAnkle.innerText = "0";
+    const elBack = document.getElementById('stat-back'); if (elBack) elBack.innerText = "0";
+    const elForce = document.getElementById('stat-force'); if (elForce) elForce.innerText = "--";
+    
+    setActiveTab('stats');
+  }, []);
+
   // Unified File Handler
-  const processFile = (file: File) => {
+  const processFile = useCallback((file: File) => {
       setVideoFile(file);
       handleReset();
-  };
+  }, [handleReset]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -157,22 +183,52 @@ const App = () => {
     }
   };
 
-  const handleReset = useCallback(() => {
-    setAllMetrics([]);
-    setCursorMetrics(null);
-    setLiveMetrics({ time: '0', velocity: 0, height: 0, power: 0, x: 0, y: 0, kneeAngle: 0, hipAngle: 0, ankleAngle: 0, backAngle: 0 });
-    setActiveTab('stats');
-  }, []);
-
   const handleAnalysisStart = useCallback(() => {
     setIsAnalyzingVideo(true);
     handleReset();
   }, [handleReset]);
 
+  const lastReactUpdateRef = useRef<number>(0);
+  
   const handleMetricsUpdate = useCallback((newMetric: LiftMetrics, history: LiftMetrics[]) => {
-    setLiveMetrics(newMetric);
-    setAllMetrics(prev => prev === history ? prev : history);
-    setCursorMetrics(null);
+    liveMetricsRef.current = newMetric;
+    
+    if (!cursorMetricsRef.current) {
+        // We use imperative DOM updates instead of React state for 60fps telemetry so it doesn't drop paints
+        const now = performance.now();
+        if (now - lastReactUpdateRef.current > 100) {
+           setLiveMetrics(newMetric); // Throttle React state generally in sync for transitions/Reference Line (10 FPS)
+           lastReactUpdateRef.current = now;
+        }
+        
+        const elVel = document.getElementById('stat-velocity'); if (elVel) elVel.innerText = newMetric.velocity.toFixed(2);
+        const elPwr = document.getElementById('stat-power'); if (elPwr) elPwr.innerText = newMetric.power.toFixed(0);
+        const elHgt = document.getElementById('stat-height'); if (elHgt) elHgt.innerText = newMetric.height.toFixed(2);
+        const elKnee = document.getElementById('stat-knee'); if (elKnee) elKnee.innerText = newMetric.kneeAngle.toFixed(0);
+        const elHip = document.getElementById('stat-hip'); if (elHip) elHip.innerText = newMetric.hipAngle.toFixed(0);
+        const elAnkle = document.getElementById('stat-ankle'); if (elAnkle) elAnkle.innerText = newMetric.ankleAngle.toFixed(0);
+        const elBack = document.getElementById('stat-back'); if (elBack) elBack.innerText = (newMetric.backAngle || 0).toFixed(0);
+        
+        const mass = barbellMassRef.current;
+        const elForce = document.getElementById('stat-force'); 
+        if (elForce) {
+            const historyArr = allMetricsRef.current;
+            if (historyArr.length > 1) {
+                const prev = historyArr[historyArr.length - 1];
+                const accel = (newMetric.velocity - prev.velocity) / 0.03;
+                elForce.innerText = (mass * (9.81 + accel)).toFixed(0);
+            } else {
+                elForce.innerText = (mass * 9.81).toFixed(0);
+            }
+        }
+    }
+    
+    // Only animate the chart dynamically if we are currently analyzing
+    // Otherwise the chart has the full dataset from handleAnalysisComplete
+    if (allMetricsRef.current.length !== history.length) {
+        setAllMetrics(history);
+    }
+    
   }, []);
 
   const handleAnalysisComplete = useCallback(async (fullHistory: LiftMetrics[]) => {
@@ -181,6 +237,7 @@ const App = () => {
   }, []);
 
   const handleChartHover = useCallback((metric: LiftMetrics | null) => {
+    cursorMetricsRef.current = metric;
     setCursorMetrics(metric);
   }, []);
   
@@ -382,7 +439,7 @@ const App = () => {
 
         {/* RIGHT SIDEBAR / MOBILE CONTENT AREA */}
         <aside 
-            className={`flex-col lg:flex-none w-full bg-zinc-900 lg:border-l lg:border-zinc-800 overflow-hidden lg:relative shrink-0 ${activeTab ? 'flex flex-1' : 'hidden lg:flex'}`}
+            className={`flex-col lg:flex-none lg:h-full w-full bg-zinc-900 lg:border-l lg:border-zinc-800 overflow-hidden lg:relative shrink-0 ${activeTab ? 'flex flex-1' : 'hidden lg:flex'}`}
             style={window.innerWidth < 1024 ? {} : { width: layout.rightWidth }}
         >
           
@@ -404,8 +461,8 @@ const App = () => {
              </div>
              <div className="flex-1 relative bg-zinc-900/50 p-0 sm:p-2 min-h-0 flex flex-col">
                 <LiftChart 
-                    data={allMetrics.length > 0 ? allMetrics : [liveMetrics]} 
-                    currentTime={parseFloat(liveMetrics.time)}
+                    data={allMetrics.length > 0 ? allMetrics : []} 
+                    currentTime={parseFloat(displayMetrics.time)}
                     barbellMass={barbellMass}
                     onCursorMove={handleChartHover}
                     onSeekToTime={handleSeek}
@@ -430,29 +487,28 @@ const App = () => {
             <div className="p-2 sm:p-4 space-y-6 pb-20 lg:pb-4">
                 
                 {/* A. Live Values - Show if Stats Tab active or Desktop */}
-                {(activeTab === 'stats' || window.innerWidth >= 1024) && (
-                    <div className="animate-fade-in">
-                       <h4 className="text-[10px] text-zinc-600 font-bold mb-3 uppercase">Instantaneous</h4>
-                       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-                           <StatBox label="Velocity" value={displayMetrics.velocity.toFixed(2)} unit="m/s" valColor="text-yellow-400" />
-                           <StatBox label="Power" value={displayMetrics.power.toFixed(0)} unit="W" valColor="text-red-400"/>
-                           <StatBox label="Height" value={displayMetrics.height.toFixed(2)} unit="m" valColor="text-blue-400"/>
-                           <StatBox label="Knee Ang" value={displayMetrics.kneeAngle.toFixed(0)} unit="°" />
-                           <StatBox label="Hip Ang" value={displayMetrics.hipAngle.toFixed(0)} unit="°" />
-                           <StatBox label="Ankle Ang" value={displayMetrics.ankleAngle.toFixed(0)} unit="°" />
-                           <StatBox label="Back Ang" value={(displayMetrics.backAngle || 0).toFixed(0)} unit="°" valColor="text-purple-400" />
-                           <StatBox 
-                              label="Force (Est)" 
-                              value={allMetrics.length > 0 ? (cursorMetrics ? (barbellMass * (9.81 + (cursorMetrics.velocity - (allMetrics[allMetrics.indexOf(cursorMetrics)-1]?.velocity || 0))/0.03)).toFixed(0) : (barbellMass * 9.81).toFixed(0)) : "--"} 
-                              unit="N" 
-                           />
-                       </div>
-                    </div>
-                )}
+                <div className={`${activeTab === 'stats' ? 'block' : 'hidden lg:block'}`}>
+                   <h4 className="text-[10px] text-zinc-600 font-bold mb-3 uppercase">Instantaneous</h4>
+                   <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                       <StatBox id="stat-velocity" label="Velocity" value={displayMetrics.velocity.toFixed(2)} unit="m/s" valColor="text-yellow-400" />
+                       <StatBox id="stat-power" label="Power" value={displayMetrics.power.toFixed(0)} unit="W" valColor="text-red-400"/>
+                       <StatBox id="stat-height" label="Height" value={displayMetrics.height.toFixed(2)} unit="m" valColor="text-blue-400"/>
+                       <StatBox id="stat-knee" label="Knee Ang" value={displayMetrics.kneeAngle.toFixed(0)} unit="°" />
+                       <StatBox id="stat-hip" label="Hip Ang" value={displayMetrics.hipAngle.toFixed(0)} unit="°" />
+                       <StatBox id="stat-ankle" label="Ankle Ang" value={displayMetrics.ankleAngle.toFixed(0)} unit="°" />
+                       <StatBox id="stat-back" label="Back Ang" value={(displayMetrics.backAngle || 0).toFixed(0)} unit="°" valColor="text-purple-400" />
+                       <StatBox 
+                          id="stat-force"
+                          label="Force (Est)" 
+                          value={allMetrics.length > 0 ? (cursorMetrics ? (barbellMass * (9.81 + (cursorMetrics.velocity - (allMetrics[allMetrics.indexOf(cursorMetrics)-1]?.velocity || 0))/0.03)).toFixed(0) : (barbellMass * 9.81).toFixed(0)) : "--"} 
+                          unit="N" 
+                       />
+                   </div>
+                </div>
 
                 {/* B. Peak Stats - Show if Stats Tab active or Desktop */}
-                {stats && (activeTab === 'stats' || window.innerWidth >= 1024) && (
-                    <div className="pt-4 border-t border-zinc-800 animate-fade-in">
+                {stats && (
+                    <div className={`pt-4 border-t border-zinc-800 ${activeTab === 'stats' ? 'block' : 'hidden lg:block'}`}>
                        <h4 className="text-[10px] text-zinc-600 font-bold mb-3 uppercase flex items-center gap-1">
                           Session Peaks
                        </h4>

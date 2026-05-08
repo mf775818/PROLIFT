@@ -126,25 +126,6 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       setZoomDomain(null);
   }, [data]);
 
-  // --- DIMENSION GUARD (INDUSTRIAL GRADE FOR IOS SAFARI) ---
-  const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
-  
-  useEffect(() => {
-    if (!chartContainerRef.current) return;
-    
-    const observeTarget = chartContainerRef.current;
-    const resizeObserver = new ResizeObserver((entries) => {
-      if (!entries || entries.length === 0) return;
-      const { width, height } = entries[0].contentRect;
-      if (width > 0 && height > 0) {
-        setDimensions({ width, height });
-      }
-    });
-    
-    resizeObserver.observe(observeTarget);
-    return () => resizeObserver.disconnect();
-  }, []);
-
   const handleExportCSV = () => {
     if (!processedData || processedData.length === 0) return;
 
@@ -456,7 +437,6 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
          onPointerCancel={handlePointerUp}
          onDoubleClick={handleDoubleClick}
       >
-        {dimensions.width > 0 && dimensions.height > 0 && (
           <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
           {mode === 'kinematics' ? (
             <ComposedChart data={processedData} onMouseMove={handleTooltip} onClick={handleChartClick} margin={{ top: 5, right: 35, bottom: 5, left: 0 }}>
@@ -607,7 +587,6 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
             </ScatterChart>
           )}
         </ResponsiveContainer>
-        )}
       </div>
     </div>
   );
