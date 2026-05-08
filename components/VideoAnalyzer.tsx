@@ -1,6 +1,10 @@
 
 import React, { useEffect, useRef, useState, useCallback, useLayoutEffect } from 'react';
 import { LiftMetrics, PoseResult, AnalysisState, Keypoint } from '../types';
+import { TrackingBuffer } from '../src/lib/hpc/TrackingBuffer';
+import { CalibrationEngineHPC } from '../src/lib/hpc/CalibrationEngineHPC';
+import { PhysicsEngineHPC } from '../src/lib/hpc/PhysicsEngineHPC';
+
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
 let g_cv: any = null;
@@ -1047,30 +1051,50 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const smoothedX = rtsX.smooth(n, xVals, confs);
     const smoothedY = rtsY.smooth(n, yVals, confs);
     
+    // --- 導入 HPC 運算管線 (Pipeline) ---
+    const trackingBuffer = new TrackingBuffer(n);
+    const calibration = new CalibrationEngineHPC();
+
+    const p2m = pixelToMeterRef.current;
+    const cw = canvasW * p2m;
+    const ch = canvasH * p2m;
+    
+    // 配置 Homography 矩陣，將 0~1 的相機坐標映射到真實世界單位 (Meters)
+    calibration.updateHomography([
+        cw, 0, 0,
+        0, -ch, ch, // Y軸上下反轉 (0~1 在 HTML Canvas 是向下)，真實世界 Y 向上
+        0, 0, 1
+    ]);
+
+    for (let i = 0; i < n; i++) {
+        trackingBuffer.push(smoothedX[i], smoothedY[i], 0, raw[i].time);
+    }
+
+    // 批次 3D 透視校正 (O(n) Zero-Allocation)
+    calibration.applyPerspectiveTransform(trackingBuffer);
+
+    const outKinetics = new Float32Array(n * 4);
+    
+    // 批次物理動力計算 (O(n) Zero-Allocation)
+    PhysicsEngineHPC.computeKinetics(trackingBuffer, outKinetics, barbellMassRef.current);
+
     const metrics: LiftMetrics[] = []; let maxVel = 0;
-    for (let i = 0; i < raw.length; i++) {
+
+    for (let i = 0; i < n; i++) {
         const frame = raw[i], sX = smoothedX[i], sY = smoothedY[i];
-        const heightM = (1 - sY) * canvasH * pixelToMeterRef.current;
-        let velocity = 0;
-        if (i > 1 && i < raw.length - 2) {
-            // Apply 5-point moving average to the derivative for extreme stability
-            const dt1 = raw[i].time - raw[i-2].time;
-            const dt2 = raw[i+2].time - raw[i].time;
-            const dh1 = ((1 - smoothedY[i]) - (1 - smoothedY[i-2])) * canvasH * pixelToMeterRef.current;
-            const dh2 = ((1 - smoothedY[i+2]) - (1 - smoothedY[i])) * canvasH * pixelToMeterRef.current;
-            
-            const v1 = dt1 > 0.001 ? dh1 / dt1 : 0;
-            const v2 = dt2 > 0.001 ? dh2 / dt2 : 0;
-            velocity = (v1 + v2) / 2;
-        } else if (i > 0 && i < raw.length - 1) {
-            const dt = raw[i+1].time - raw[i-1].time;
-            const prevH = (1 - smoothedY[i-1]) * canvasH * pixelToMeterRef.current;
-            const nextH = (1 - smoothedY[i+1]) * canvasH * pixelToMeterRef.current;
-            if (dt > 0.001) velocity = (nextH - prevH) / dt;
-        }
         
-        // Final sanity bounds
-        velocity = Math.max(-5, Math.min(5, velocity)); // Cap to realistic physical limits (5 m/s is huge)
+        // 提取計算好的 3D 物理座標
+        const physX = trackingBuffer.data[i * 4];
+        const physY = trackingBuffer.data[i * 4 + 1];
+        
+        const kOffset = i * 4;
+        let velocity = outKinetics[kOffset];
+        const accel = outKinetics[kOffset + 1];
+        const force = outKinetics[kOffset + 2];
+        const power = outKinetics[kOffset + 3];
+
+        // 加上合理的邊界保護如同舊有邏輯
+        velocity = Math.max(-5, Math.min(5, velocity)); 
 
         if (Math.abs(velocity) > maxVel) maxVel = Math.abs(velocity);
         
@@ -1082,9 +1106,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         metrics.push({ 
             time: frame.time.toFixed(3), 
             velocity: Math.max(0, velocity), 
-            height: heightM, 
-            power: Math.max(0, barbellMassRef.current * 9.81 * velocity), 
-            x: sX, 
+            height: Math.max(0, physY), 
+            acceleration: accel || 0,
+            force: Math.max(0, force || 0),
+            power: Math.max(0, power || 0), 
+            x: sX, // 將原始的 X, Y 保留，供前端畫 2D 軌跡使用
             y: sY, 
             kneeAngle, 
             hipAngle,
