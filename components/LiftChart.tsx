@@ -255,21 +255,32 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
   
   const dragStartRef = useRef<{ x: number, y: number, min: number, max: number, moved: boolean } | null>(null);
   
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const getCoordinates = (e: React.MouseEvent | React.TouchEvent | React.PointerEvent) => {
+      if ('touches' in e && e.touches.length > 0) {
+          return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      } else if ('changedTouches' in e && e.changedTouches.length > 0) {
+          return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+      }
+      return { x: (e as React.MouseEvent).clientX, y: (e as React.MouseEvent).clientY };
+  };
+
+  const handlePointerDown = (e: React.PointerEvent | React.TouchEvent | React.MouseEvent) => {
+      const coords = getCoordinates(e);
       const currentZoom = zoomDomain || { min: processedData[0].timeVal, max: processedData[processedData.length - 1].timeVal };
       dragStartRef.current = { 
-          x: e.clientX, 
-          y: e.clientY,
+          x: coords.x, 
+          y: coords.y,
           min: currentZoom.min, 
           max: currentZoom.max,
           moved: false
       };
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handlePointerMove = (e: React.PointerEvent | React.TouchEvent | React.MouseEvent) => {
       if (!dragStartRef.current || !zoomDomain || !chartContainerRef.current) return;
       
-      const dx = e.clientX - dragStartRef.current.x;
+      const coords = getCoordinates(e);
+      const dx = coords.x - dragStartRef.current.x;
       if (Math.abs(dx) > 5) dragStartRef.current.moved = true;
 
       const width = chartContainerRef.current.clientWidth;
@@ -297,16 +308,29 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       setZoomDomain({ min: newMin, max: newMax });
   };
 
-  const handleMouseUp = (e: React.MouseEvent) => {
+  const handleChartClick = (nextState: any) => {
+      if (dragStartRef.current && dragStartRef.current.moved) return;
+      if (onSeekToTime && nextState && nextState.activePayload && nextState.activePayload.length > 0) {
+          onSeekToTime(nextState.activePayload[0].payload.timeVal);
+      }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent | React.TouchEvent | React.MouseEvent) => {
       if (dragStartRef.current && !dragStartRef.current.moved && onSeekToTime) {
           if (hoveredMetricRef.current) {
                onSeekToTime(hoveredMetricRef.current.timeVal);
           } else if (chartContainerRef.current && processedData.length > 0) {
+               const coords = getCoordinates(e);
+               
+               // Native coordinate fallback map
                const rect = chartContainerRef.current.getBoundingClientRect();
-               const x = e.clientX - rect.left;
-               const marginLeft = 30; // Left YAxis
-               const marginRight = mode === 'kinematics' || mode === 'kinetics' ? 30 : 10;
+               const x = coords.x - rect.left;
+               
+               // Retrieve computed margins
+               const marginLeft = mode === 'kinematics' || mode === 'kinetics' || mode === 'angles' || mode === 'power' ? 35 : 10;
+               const marginRight = mode === 'kinematics' || mode === 'kinetics' ? 35 : 10;
                const chartWidth = rect.width - marginLeft - marginRight;
+               
                if (chartWidth > 0) {
                    let pct = (x - marginLeft) / chartWidth;
                    pct = Math.max(0, Math.min(1, pct));
@@ -423,18 +447,19 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
 
       <div 
          ref={chartContainerRef}
-         className={`flex-1 w-full min-h-0 relative ${zoomDomain ? 'cursor-ew-resize' : 'cursor-pointer'}`}
-         onMouseLeave={() => { onCursorMove && onCursorMove(null); handleMouseUp({ clientX: -999, clientY: -999 } as any); }}
+         className={`flex-1 w-full min-h-0 relative ${zoomDomain ? 'cursor-ew-resize' : 'cursor-pointer'} touch-none`}
+         onMouseLeave={() => { onCursorMove && onCursorMove(null); handlePointerUp({ clientX: -999, clientY: -999 } as any); }}
          onWheel={handleWheel}
-         onMouseDown={handleMouseDown}
-         onMouseMove={handleMouseMove}
-         onMouseUp={handleMouseUp}
+         onPointerDown={handlePointerDown}
+         onPointerMove={handlePointerMove}
+         onPointerUp={handlePointerUp}
+         onPointerCancel={handlePointerUp}
          onDoubleClick={handleDoubleClick}
       >
         {dimensions.width > 0 && dimensions.height > 0 && (
           <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
           {mode === 'kinematics' ? (
-            <ComposedChart data={processedData} onMouseMove={handleTooltip} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
+            <ComposedChart data={processedData} onMouseMove={handleTooltip} onClick={handleChartClick} margin={{ top: 5, right: 35, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
               <XAxis dataKey="timeVal" type="number" domain={xAxisDomain} allowDataOverflow={true} stroke="#52525b" fontSize={10} tickFormatter={(val) => val.toFixed(1)} />
               <YAxis yAxisId="left" stroke="#71717a" fontSize={10} width={30} />
@@ -462,7 +487,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
               </defs>
             </ComposedChart>
           ) : mode === 'kinetics' ? (
-            <ComposedChart data={processedData} onMouseMove={handleTooltip} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
+            <ComposedChart data={processedData} onMouseMove={handleTooltip} onClick={handleChartClick} margin={{ top: 5, right: 35, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
               <XAxis dataKey="timeVal" type="number" domain={xAxisDomain} allowDataOverflow={true} stroke="#52525b" fontSize={10} />
               <YAxis yAxisId="left" stroke="#71717a" fontSize={10} width={40} label={{ value: 'N', angle: -90, position: 'insideLeft', fontSize: 9, fill: '#52525b' }} />
@@ -483,7 +508,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
               <Line yAxisId="right" type="monotone" dataKey="acceleration" stroke="#10b981" strokeWidth={1.5} dot={false} strokeDasharray="4 4" isAnimationActive={false} />
             </ComposedChart>
           ) : mode === 'power' ? (
-             <AreaChart data={processedData} onMouseMove={handleTooltip} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
+             <AreaChart data={processedData} onMouseMove={handleTooltip} onClick={handleChartClick} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
               <XAxis dataKey="timeVal" type="number" domain={xAxisDomain} allowDataOverflow={true} stroke="#52525b" fontSize={10} />
               <YAxis stroke="#71717a" fontSize={10} width={40} />
@@ -499,7 +524,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
               <Area type="monotone" dataKey="power" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} strokeWidth={2} isAnimationActive={false} />
             </AreaChart>
           ) : mode === 'angles' ? (
-             <LineChart data={processedData} onMouseMove={handleTooltip} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
+             <LineChart data={processedData} onMouseMove={handleTooltip} onClick={handleChartClick} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
               <XAxis dataKey="timeVal" type="number" domain={xAxisDomain} allowDataOverflow={true} stroke="#52525b" fontSize={10} />
               <YAxis stroke="#71717a" fontSize={10} width={40} domain={[0, 180]} />
@@ -526,8 +551,9 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
           ) : (
             // TRAJECTORY CHART
             <ScatterChart 
-                margin={{ top: 5, right: 5, bottom: 5, left: 5 }}
+                margin={{ top: 5, right: 10, bottom: 5, left: 0 }}
                 onMouseMove={handleTooltip}
+                onClick={handleChartClick}
             >
                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
                <XAxis 
