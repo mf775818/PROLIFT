@@ -290,38 +290,30 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
   };
 
   const handleChartClick = (nextState: any) => {
+      // 1. 若使用者正在拖曳(Zoom/Pan)圖表，則忽略點擊，避免干擾
       if (dragStartRef.current && dragStartRef.current.moved) return;
-      if (onSeekToTime && nextState && nextState.activePayload && nextState.activePayload.length > 0) {
-          onSeekToTime(nextState.activePayload[0].payload.timeVal);
+
+      if (onSeekToTime && nextState) {
+          // 優先：精準點擊到實體資料節點或線條上 (所有圖表皆適用，包含軌跡圖)
+          if (nextState.activePayload && nextState.activePayload.length > 0) {
+              onSeekToTime(nextState.activePayload[0].payload.timeVal);
+          } 
+          // 備案：點擊在圖表區的空白處 (Recharts 的 activeLabel 會直接幫我們精準映射到 X 軸的準確時間)
+          // 注意：排除軌跡圖 ('trajectory')，因為它的 X 軸是位移(cm)，不是時間。
+          else if (mode !== 'trajectory' && nextState.activeLabel !== undefined) {
+              onSeekToTime(Number(nextState.activeLabel));
+          }
       }
   };
 
   const handlePointerUp = (e: React.PointerEvent | React.TouchEvent | React.MouseEvent) => {
-      if (dragStartRef.current && !dragStartRef.current.moved && onSeekToTime) {
-          if (hoveredMetricRef.current) {
-               onSeekToTime(hoveredMetricRef.current.timeVal);
-          } else if (chartContainerRef.current && processedData.length > 0) {
-               const coords = getCoordinates(e);
-               
-               // Native coordinate fallback map
-               const rect = chartContainerRef.current.getBoundingClientRect();
-               const x = coords.x - rect.left;
-               
-               // Retrieve computed margins
-               const marginLeft = mode === 'kinematics' || mode === 'kinetics' || mode === 'angles' || mode === 'power' ? 35 : 10;
-               const marginRight = mode === 'kinematics' || mode === 'kinetics' ? 35 : 10;
-               const chartWidth = rect.width - marginLeft - marginRight;
-               
-               if (chartWidth > 0) {
-                   let pct = (x - marginLeft) / chartWidth;
-                   pct = Math.max(0, Math.min(1, pct));
-                   const tMin = zoomDomain ? zoomDomain.min : processedData[0].timeVal;
-                   const tMax = zoomDomain ? zoomDomain.max : processedData[processedData.length - 1].timeVal;
-                   onSeekToTime(tMin + pct * (tMax - tMin));
-               }
-          }
-      }
-      dragStartRef.current = null;
+      // 【架構師閹割區】
+      // 徹底刪除舊有的「手動座標轉時間」的計算邏輯，消除與 Recharts SVG 渲染的公差。
+      // 將精準跳轉的工作完全委託給上方的 handleChartClick。
+      
+      // 注意：這裡不設 dragStartRef.current = null;
+      // 因為 onClick 事件會在 pointerup 之後才觸發，它需要讀取 moved 狀態來判斷是不是拖曳操作。
+      // dragStartRef 會在下一次點擊 (handlePointerDown) 時自動重新初始化。
   };
   
   const handleDoubleClick = (e: React.MouseEvent) => {
