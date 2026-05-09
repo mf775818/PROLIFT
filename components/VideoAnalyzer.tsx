@@ -4,6 +4,7 @@ import { LiftMetrics, PoseResult, AnalysisState, Keypoint } from '../types';
 import { TrackingBuffer } from '../src/lib/hpc/TrackingBuffer';
 import { CalibrationEngineHPC } from '../src/lib/hpc/CalibrationEngineHPC';
 import { PhysicsEngineHPC } from '../src/lib/hpc/PhysicsEngineHPC';
+import { KalmanSmoother1D } from '../src/lib/hpc/KalmanSmoother';
 
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
@@ -356,25 +357,56 @@ class OpenCVTracker {
         const cv = g_cv || (window as any).cv;
         if (!cv || !cv.Mat || !this.isInitialized) return null;
         
-        let src, nextGray, nextPts, status, err, newPtsMat;
+        let src, fullNextGray, nextPts, status, err, newPtsMat;
+        let prevGrayRoi, nextGrayRoi, localPrevPts, localNextPts;
         
         try {
             src = cv.imread(ctx.canvas); 
-            nextGray = new cv.Mat(); 
-            nextPts = new cv.Mat(); 
-            status = new cv.Mat(); 
-            err = new cv.Mat(); 
+            fullNextGray = new cv.Mat(); 
             
-            cv.cvtColor(src, nextGray, cv.COLOR_RGBA2GRAY, 0); 
-            this.clahe.apply(nextGray, nextGray);
+            cv.cvtColor(src, fullNextGray, cv.COLOR_RGBA2GRAY, 0); 
+            this.clahe.apply(fullNextGray, fullNextGray);
             
-            // Window size 31x31 allows for robust tracking even with mobile frame drops
-            const winSize = new cv.Size(31, 31);
+            // --- INDUSTRIAL OPTIMIZATION: ROI Cropping ---
+            const padding = 50;
+            // Calculate a safe extended bounding box for tracking
+            const rx = Math.max(0, this.currentROI.x - padding);
+            const ry = Math.max(0, this.currentROI.y - padding);
+            const rw = Math.min(fullNextGray.cols - rx, this.currentROI.width + padding * 2);
+            const rh = Math.min(fullNextGray.rows - ry, this.currentROI.height + padding * 2);
+            
+            const roiRect = new cv.Rect(rx, ry, rw, rh);
+            
+            prevGrayRoi = this.prevGray.roi(roiRect);
+            nextGrayRoi = fullNextGray.roi(roiRect);
+            
+            localPrevPts = new cv.Mat();
+            this.prevPts.copyTo(localPrevPts);
+            for (let i = 0; i < localPrevPts.rows; i++) {
+                localPrevPts.data32F[i * 2] -= rx;
+                localPrevPts.data32F[i * 2 + 1] -= ry;
+            }
+            
+            localNextPts = new cv.Mat();
+            status = new cv.Mat();
+            err = new cv.Mat();
+            
+            // --- INDUSTRIAL OPTIMIZATION: Faster Optical Flow ---
+            // winSize 15x15 and maxLevel 2 to balance speed and accuracy in offline/batch environments
+            const winSize = new cv.Size(15, 15);
             
             cv.calcOpticalFlowPyrLK(
-                this.prevGray, nextGray, this.prevPts, nextPts, status, err, winSize, 6, 
-                new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 30, 0.01)
+                prevGrayRoi, nextGrayRoi, localPrevPts, localNextPts, status, err, winSize, 2, 
+                new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 10, 0.03)
             );
+
+            nextPts = new cv.Mat();
+            localNextPts.copyTo(nextPts);
+            // Convert back to full image coordinates
+            for (let i = 0; i < nextPts.rows; i++) {
+                nextPts.data32F[i * 2] += rx;
+                nextPts.data32F[i * 2 + 1] += ry;
+            }
 
             // --- INDUSTRIAL FIX: Adaptive Point Pruning & GC Relief ---
             const totalPoints = status.rows;
@@ -426,8 +458,8 @@ class OpenCVTracker {
                 }
                 this.prevPts = newPtsMat;
                 if (this.prevGray) this.prevGray.delete();
-                this.prevGray = nextGray;
-                nextGray = null; // Prevent deletion in finally
+                this.prevGray = fullNextGray;
+                fullNextGray = null; // Prevent deletion in finally
             } else {
                 this.isInitialized = false;
             }
@@ -438,10 +470,14 @@ class OpenCVTracker {
             return null;
         } finally {
             if (src) src.delete();
-            if (nextGray) nextGray.delete();
+            if (fullNextGray) fullNextGray.delete();
             if (nextPts) nextPts.delete();
             if (status) status.delete();
             if (err) err.delete();
+            if (prevGrayRoi) prevGrayRoi.delete();
+            if (nextGrayRoi) nextGrayRoi.delete();
+            if (localPrevPts) localPrevPts.delete();
+            if (localNextPts) localNextPts.delete();
         }
     }
     
@@ -535,7 +571,15 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         const pose = new window.Pose({
           locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
         });
-        pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, enableSegmentation: false, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        pose.setOptions({ 
+          modelComplexity: 1, 
+          // --- INDUSTRIAL OPTIMIZATION ---
+          static_image_mode: true, // Independent frame detection, no tracking overhead
+          smoothLandmarks: false,  // Disable smoothing, avoid cross-frame dependencies
+          enableSegmentation: false, 
+          minDetectionConfidence: 0.6, 
+          minTrackingConfidence: 0.5 
+        });
         setPoseModel(pose);
       }
     };
@@ -1047,9 +1091,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             }
         }
     }
-    const rtsX = new RTSSmoother(5e-5, 1e-4), rtsY = new RTSSmoother(5e-5, 1e-4);
-    const smoothedX = rtsX.smooth(n, xVals, confs);
-    const smoothedY = rtsY.smooth(n, yVals, confs);
+    const kX = new KalmanSmoother1D(xVals[0], 5e-5, 1e-4);
+    const kY = new KalmanSmoother1D(yVals[0], 5e-5, 1e-4);
+    const smoothedX = kX.smoothBatch(xVals, n, confs);
+    const smoothedY = kY.smoothBatch(yVals, n, confs);
     
     // --- 導入 HPC 運算管線 (Pipeline) ---
     const trackingBuffer = new TrackingBuffer(n);

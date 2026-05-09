@@ -26,9 +26,9 @@ export class PhysicsEngineHPC {
       currT = t[i];
       
       dt = currT - prevT;
-      // 避免 dt = 0 造成 NaN，並使用乘法代替除法加速
-      invDt = dt > 0.001 ? 1.0 / dt : 0; 
-
+      const dtClamped = Math.max(dt, 1e-7); // 避免 dt = 0 造成 NaN
+      invDt = 1.0 / dtClamped;
+      
       // 運動學計算 (Kinematics)
       // Y 軸位移，假設向上為正
       vel = (currY - prevY) * invDt; 
@@ -36,7 +36,10 @@ export class PhysicsEngineHPC {
 
       // 動力學計算 (Kinetics)
       force = barbellMass * (this.GRAVITY + accel);
-      power = Math.max(0, force * vel);
+      
+      const rawPower = force * vel;
+      // 去分支取正功: (x + |x|)/2 = max(0, x)
+      power = (rawPower + Math.abs(rawPower)) * 0.5;
 
       // 寫入預分配的輸出陣列
       const offset = i * 4;
