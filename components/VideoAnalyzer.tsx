@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState, useCallback, useLayoutEffect } from
 import { LiftMetrics, PoseResult, AnalysisState, Keypoint } from '../types';
 import { TrackingBuffer } from '../src/lib/hpc/TrackingBuffer';
 import { CalibrationEngineHPC } from '../src/lib/hpc/CalibrationEngineHPC';
+import { DepthCalibratorHPC } from '../src/lib/hpc/DepthCalibratorHPC';
 import { PhysicsEngineHPC } from '../src/lib/hpc/PhysicsEngineHPC';
 import { KalmanSmoother1D } from '../src/lib/hpc/KalmanSmoother';
 
@@ -17,6 +18,7 @@ interface VideoAnalyzerProps {
   onAnalysisStart: () => void;
   onReset?: () => void;
   barbellMass: number;
+  userHeightMm?: number | null;
   seekRequest?: {time: number, nonce: number} | null;
   onFileSelect?: (file: File) => void;
 }
@@ -491,6 +493,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   onAnalysisStart,
   onReset,
   barbellMass,
+  userHeightMm,
   seekRequest,
   onFileSelect
 }) => {
@@ -1139,21 +1142,59 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     // --- 導入 HPC 運算管線 (Pipeline) ---
     const trackingBuffer = new TrackingBuffer(n);
     const calibration = new CalibrationEngineHPC();
-
-    const p2m = pixelToMeterRef.current;
-    const cw = canvasW * p2m;
-    const ch = canvasH * p2m;
+    const depthCalibrator = new DepthCalibratorHPC();
     
-    // 配置 Homography 矩陣，將 0~1 的相機坐標映射到真實世界單位 (Meters)
-    calibration.updateHomography([
-        cw, 0, 0,
-        0, -ch, ch, // Y軸上下反轉 (0~1 在 HTML Canvas 是向下)，真實世界 Y 向上
-        0, 0, 1
-    ]);
+    // 計算初始幀的像素尺寸以餵給雙錨定系統
+    let platePixelHeight = 0;
+    if (normalizedROI && normalizedROI.height > 0) {
+        platePixelHeight = normalizedROI.height * canvasH;
+    }
+    
+    let bodyPixelHeight = 0;
+    if (raw.length > 0) {
+        const frame0 = raw[0];
+        // 頭頂通常用 nose(0) 或 eye(1,2,3,4,5,6), 這裡取 nose
+        // 腳底取左右腳跟的平均 (29, 30) 或腳趾 (31, 32)
+        const top = frame0.landmarks[0]?.y;
+        const heelL = frame0.landmarks[29]?.y;
+        const heelR = frame0.landmarks[30]?.y;
+        if (top !== undefined && heelL !== undefined && heelR !== undefined) {
+             const bottom = Math.max(heelL, heelR);
+             bodyPixelHeight = (bottom - top) * canvasH;
+        }
+    }
+
+    if (bodyPixelHeight === 0) bodyPixelHeight = canvasH * 0.8; // 備用方案
+    if (platePixelHeight === 0) platePixelHeight = canvasH * 0.2; // 備用方案
+
+    // 初始化 HPC 深度校準系統
+    depthCalibrator.calibrate(platePixelHeight, bodyPixelHeight, userHeightMm);
+    const isDualAnchored = depthCalibrator.isHighPrecisionMode();
+    console.log("Calibration Mode: ", isDualAnchored ? "Dual Anchored (Bi-Planar)" : "Single Anchored");
 
     for (let i = 0; i < n; i++) {
-        trackingBuffer.push(smoothedX[i], smoothedY[i], 0, raw[i].time);
+        // 先將 normalized (0~1) 轉為像素坐標
+        // 因為後續物理引擎需要 Y 向上，我們在此處先將 Y 翻轉: (1 - y) * canvasH
+        trackingBuffer.push(smoothedX[i] * canvasW, (1.0 - smoothedY[i]) * canvasH, 0, raw[i].time);
     }
+    
+    // 利用 HPC 執行整批座標轉換 (像素轉真實物理空間 mm)
+    // 我們建立一個長度為 n 的 boolean array, 表示這些都是槓鈴節點
+    const isBarbellArray = new Array(n).fill(true);
+    depthCalibrator.transformToPhysicalSpace(trackingBuffer.x, trackingBuffer.y, trackingBuffer.head, isBarbellArray);
+
+    // 我們將 mm 轉回 Meters，以確保後方物理引擎的公式無縫接軌 (Power, Velocity 單位 = m/s)
+    for (let i = 0; i < trackingBuffer.head; i++) {
+        trackingBuffer.x[i] /= 1000.0;
+        trackingBuffer.y[i] /= 1000.0;
+    }
+
+    // 將 1:1 的單位矩陣傳給舊有的 perspective engine (因為我們已經計算過比例與反轉了)
+    calibration.updateHomography([
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, 1
+    ]);
 
     // 批次 3D 透視校正 (O(n) Zero-Allocation)
     calibration.applyPerspectiveTransform(trackingBuffer);

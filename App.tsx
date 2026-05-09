@@ -71,6 +71,8 @@ const App = () => {
   const barbellMassRef = useRef(barbellMass);
   useEffect(() => { barbellMassRef.current = barbellMass; }, [barbellMass]);
 
+  const [userHeightCm, setUserHeightCm] = useState<number | ''>('');
+  
   // Mobile Tab State
   const [activeTab, setActiveTab] = useState<'chart' | 'stats'>('stats');
 
@@ -336,24 +338,45 @@ const App = () => {
             className="hidden lg:flex bg-zinc-900 p-5 flex-col gap-6 border-r border-zinc-800 overflow-y-auto shrink-0"
             style={{ width: layout.leftWidth }}
         >
-          <div className="space-y-4">
+           <div className="space-y-4">
              <h3 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
               Parameters
             </h3>
-            <div className="bg-zinc-800/50 p-4 rounded-xl border border-zinc-700/50">
-               <div className="flex justify-between items-center mb-3">
-                 <span className="text-[10px] text-zinc-400 font-bold">BARBELL MASS</span>
-                 <span className="text-xs font-mono text-yellow-400 font-bold bg-yellow-400/10 px-2 py-0.5 rounded">{barbellMass} kg</span>
+            <div className="bg-zinc-800/50 p-4 rounded-xl border border-zinc-700/50 space-y-4">
+               <div>
+                 <div className="flex justify-between items-center mb-3">
+                   <span className="text-[10px] text-zinc-400 font-bold">BARBELL MASS</span>
+                   <span className="text-xs font-mono text-yellow-400 font-bold bg-yellow-400/10 px-2 py-0.5 rounded">{barbellMass} kg</span>
+                 </div>
+                 <input 
+                  type="range" 
+                  min="20" 
+                  max="260" 
+                  step="1" 
+                  value={barbellMass}
+                  onChange={(e) => setBarbellMass(parseInt(e.target.value))}
+                  className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-yellow-400"
+                 />
                </div>
-               <input 
-                type="range" 
-                min="20" 
-                max="260" 
-                step="1" 
-                value={barbellMass}
-                onChange={(e) => setBarbellMass(parseInt(e.target.value))}
-                className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-yellow-400"
-               />
+
+               <div className="border-t border-zinc-700/50 pt-4">
+                 <div className="flex justify-between items-center mb-3">
+                   <span className="text-[10px] text-zinc-400 font-bold">USER HEIGHT <span className="opacity-50 font-normal ml-1">(Optional)</span></span>
+                   <span className="text-xs font-mono text-blue-400 font-bold bg-blue-400/10 px-2 py-0.5 rounded">{userHeightCm ? `${userHeightCm} cm` : 'Auto'}</span>
+                 </div>
+                 <input 
+                    type="number"
+                    min="100"
+                    max="250"
+                    placeholder="Enter height in cm"
+                    value={userHeightCm}
+                    onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
+                    className="w-full bg-zinc-900 border border-zinc-700 text-white text-sm rounded-lg p-2 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 font-mono transition-colors"
+                 />
+                 <p className="text-[9px] text-zinc-500 mt-2 leading-relaxed">
+                   Set for <span className="text-blue-400">Bi-Planar Calibration</span>. Enhances trajectory accuracy.
+                 </p>
+               </div>
             </div>
           </div>
           
@@ -394,6 +417,7 @@ const App = () => {
              onAnalysisStart={handleAnalysisStart}
              onReset={handleReset}
              barbellMass={barbellMass}
+             userHeightMm={userHeightCm ? userHeightCm * 10 : null}
              seekRequest={seekRequest}
              onFileSelect={processFile}
            />
@@ -405,14 +429,25 @@ const App = () => {
         </div>
 
         {/* MOBILE CONTROLS (Between Video and Tabs) */}
-        <div className="lg:hidden px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex items-center gap-4 shrink-0">
-            <div className="flex-1">
-               <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest block mb-1">Weight: {barbellMass}kg</label>
-               <input 
-                type="range" min="20" max="260" step="1" value={barbellMass}
-                onChange={(e) => setBarbellMass(parseInt(e.target.value))}
-                className="w-full h-1 bg-zinc-700 rounded-lg appearance-none accent-yellow-400"
-               />
+        <div className="lg:hidden px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex flex-col gap-3 shrink-0">
+            <div className="flex items-center gap-4">
+                <div className="flex-1">
+                   <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest block mb-1">Weight: {barbellMass}kg</label>
+                   <input 
+                    type="range" min="20" max="260" step="1" value={barbellMass}
+                    onChange={(e) => setBarbellMass(parseInt(e.target.value))}
+                    className="w-full h-1 bg-zinc-700 rounded-lg appearance-none accent-yellow-400"
+                   />
+                </div>
+                <div className="w-24">
+                   <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest block mb-1">Height</label>
+                   <input 
+                      type="number" min="100" max="250" placeholder="cm (opt)"
+                      value={userHeightCm}
+                      onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
+                      className="w-full bg-zinc-800 border-none text-white text-xs rounded p-1.5 font-mono text-center"
+                   />
+                </div>
             </div>
         </div>
 
