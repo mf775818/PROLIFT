@@ -9,11 +9,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-dom": "^19.2.3",
     "@google/genai": "^1.36.0",
+    "mp4box": "^2.3.0",
     "react": "^19.2.3",
-    "recharts": "^3.6.0",
-    "react-markdown": "^10.1.0"
+    "react-dom": "^19.2.3",
+    "react-markdown": "^10.1.0",
+    "recharts": "^3.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
