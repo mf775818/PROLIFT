@@ -574,8 +574,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         pose.setOptions({ 
           modelComplexity: 1, 
           // --- INDUSTRIAL OPTIMIZATION ---
-          static_image_mode: true, // Independent frame detection, no tracking overhead
-          smoothLandmarks: false,  // Disable smoothing, avoid cross-frame dependencies
+          static_image_mode: false, // Independent frame detection, no tracking overhead
+          smoothLandmarks: true,  // Disable smoothing, avoid cross-frame dependencies
           enableSegmentation: false, 
           minDetectionConfidence: 0.6, 
           minTrackingConfidence: 0.5 
@@ -674,17 +674,30 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       startXRef.current = 0;
       setIsPlaying(false);
 
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
+      let objectUrl: string | null = null;
 
       prepareVideoFile(videoFile).then(url => {
+          objectUrl = url;
           setVideoUrl(url);
           const hiddenVid = processingVideoRef.current;
           try {
-              hiddenVid.src = url;
-              hiddenVid.muted = true;
-              hiddenVid.playsInline = true;
-              hiddenVid.crossOrigin = "anonymous";
-              hiddenVid.load(); // Ensure hidden video loads the new source
+              if (hiddenVid && hiddenVid.src !== url) {
+                  // If there's an ongoing fetch, setting src interrupts it, which causes a benign abort warning.
+                  // We accept this since we need the new video.
+                  hiddenVid.src = url;
+                  hiddenVid.muted = true;
+                  hiddenVid.playsInline = true;
+                  hiddenVid.crossOrigin = "anonymous";
+                  
+                  // 🔥 Fix 2: 同樣對隱藏的分析用影片施加 0.001 秒 Hack
+                  hiddenVid.onloadeddata = () => {
+                      if (hiddenVid.currentTime === 0) {
+                          hiddenVid.currentTime = 0.001;
+                      }
+                  };
+
+                  hiddenVid.load(); // 確保隱藏影片重新載入來源
+              }
           } catch (e) {
               console.warn("Could not setup hidden analysis video: ", e);
           }
@@ -695,7 +708,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           setIsVideoLoading(false);
       });
 
-      return () => { if (videoUrl) URL.revokeObjectURL(videoUrl); };
+      return () => { 
+          if (objectUrl) URL.revokeObjectURL(objectUrl); 
+      };
     }
   }, [videoFile, poseModel]);
 
@@ -1019,6 +1034,31 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
              if (poseResult && poseResult.poseLandmarks) {
                  rawDataRef.current.push({ index: frameIndex, time: currentTime, landmarks: poseResult.poseLandmarks, roi: trackedCenter || undefined });
+                 
+                 // 🔥 UX Hack: Live Preview
+                 const overlayCanvas = canvasRef.current;
+                 const overlayCtx = overlayCanvas?.getContext('2d');
+                 if (overlayCanvas && overlayCtx && window.drawConnectors && window.drawLandmarks) {
+                     const w = overlayCanvas.width;
+                     const h = overlayCanvas.height;
+                     overlayCtx.clearRect(0, 0, w, h);
+                     
+                     overlayCtx.save();
+                     overlayCtx.globalAlpha = 0.8;
+                     window.drawConnectors(overlayCtx, poseResult.poseLandmarks, window.POSE_CONNECTIONS, { color: '#00ff00', lineWidth: 2 });
+                     window.drawLandmarks(overlayCtx, poseResult.poseLandmarks, { color: '#ffffff', lineWidth: 1, radius: 2 });
+                     overlayCtx.restore();
+
+                     if (trackedCenter) {
+                         const rx = trackedCenter.x * w;
+                         const ry = trackedCenter.y * h;
+                         overlayCtx.beginPath();
+                         overlayCtx.arc(rx, ry, 10, 0, 2*Math.PI);
+                         overlayCtx.strokeStyle = '#facc15';
+                         overlayCtx.lineWidth = 3;
+                         overlayCtx.stroke();
+                     }
+                 }
              }
            }
        } catch (frameErr) {
@@ -1200,7 +1240,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     if (videoRef.current) {
         try {
             if (videoRef.current.readyState >= 1) {
-                videoRef.current.currentTime = 0;
+                // 🔥 將 0 改為 0.001，這與解決手機端黑屏有關 (下面會解釋)
+                videoRef.current.currentTime = 0.001; 
             }
             videoRef.current.playbackRate = playbackSpeed;
         } catch (e) {
@@ -1208,9 +1249,19 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         }
     }
     
+    // 🔥 Fix 1: 清除 Live Preview 的綠色骨架殘影
+    const overlayCanvas = canvasRef.current;
+    const overlayCtx = overlayCanvas?.getContext('2d');
+    if (overlayCanvas && overlayCtx) {
+        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    }
+
     setAnalysisState(AnalysisState.COMPLETE); 
     onAnalysisCompleteRef.current(metrics);
     onMetricsUpdateRef.current(metrics[0], metrics);
+
+    // 🔥 手動補畫第一幀的乾淨 UI（只顯示追蹤點與數據，不顯示骨架）
+    drawOverlay(metrics[0], 0);
   };
 
   const rafIdRef = useRef<number | null>(null);
@@ -1438,6 +1489,14 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
   const handleCanPlay = () => {
       setIsVideoLoading(false);
+      
+      // 🔥 Fix 2: iOS Safari MOV 黑畫面 Hack
+      if (videoRef.current) {
+          // 如果時間是 0，強制跳轉到 0.001 秒，迫使 iOS 渲染第一幀預覽
+          if (videoRef.current.currentTime === 0) {
+              videoRef.current.currentTime = 0.001;
+          }
+      }
   };
 
   // --- NEW: Playback Control Functions ---
@@ -1480,7 +1539,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const togglePlay = () => {
       if (!videoRef.current) return;
       if (videoRef.current.paused) {
-          videoRef.current.play();
+          const playPromise = videoRef.current.play();
+          if (playPromise !== undefined) {
+              playPromise.catch((error) => {
+                  console.warn("Video play interrupted:", error);
+                  setIsPlaying(false);
+              });
+          }
           setIsPlaying(true);
       } else {
           videoRef.current.pause();
@@ -1532,7 +1597,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           <video
             ref={videoRef}
             src={videoUrl}
-            className={`w-full h-full object-contain block ${analysisState === AnalysisState.ANALYZING ? 'opacity-50 blur-sm' : ''}`}
+            className={`w-full h-full object-contain block ${analysisState === AnalysisState.ANALYZING ? 'opacity-30' : ''}`}
             style={{ transform: 'translateZ(0)', willChange: 'transform' }}
             // Remove default controls to use custom industrial controls
             controls={false}
