@@ -1,21 +1,41 @@
 export class TrackingBuffer {
-  public data: Float32Array;
-  public capacity: number;
-  public head: number = 0;
+  public readonly buffer: SharedArrayBuffer | ArrayBuffer;
+  public readonly x: Float32Array;
+  public readonly y: Float32Array;
+  public readonly z: Float32Array;
+  public readonly t: Float32Array;
+  
+  public readonly capacity: number;
+  private readonly meta: Int32Array; // 儲存 head 等元數據
 
-  constructor(maxFrames: number = 3000) { // 預設支援 100 秒 (30fps)
+  constructor(maxFrames: number = 3000, existingBuffer?: SharedArrayBuffer | ArrayBuffer) {
     this.capacity = maxFrames;
-    this.data = new Float32Array(maxFrames * 4); // 每個幀佔用 4 個 float (16 bytes)
+    const size = maxFrames * 4; // 4 個 float 分量
+    const byteLength = size * 4 + 64; // 預留 64 bytes 給 metadata 與對齊
+
+    this.buffer = existingBuffer || (typeof SharedArrayBuffer !== 'undefined' ? new SharedArrayBuffer(byteLength) : new ArrayBuffer(byteLength));
+    
+    // 手動劃分連續內存區塊
+    let offset = 0;
+    this.x = new Float32Array(this.buffer, offset, maxFrames); offset += maxFrames * 4;
+    this.y = new Float32Array(this.buffer, offset, maxFrames); offset += maxFrames * 4;
+    this.z = new Float32Array(this.buffer, offset, maxFrames); offset += maxFrames * 4;
+    this.t = new Float32Array(this.buffer, offset, maxFrames); offset += maxFrames * 4;
+    
+    this.meta = new Int32Array(this.buffer, offset, 4);
   }
 
-  // O(1) 零分配寫入
-  public push(x: number, y: number, z: number, time: number): void {
-    if (this.head >= this.capacity) return; // 環形緩衝區或阻擋機制
-    const offset = this.head * 4;
-    this.data[offset] = x;
-    this.data[offset + 1] = y;
-    this.data[offset + 2] = z;
-    this.data[offset + 3] = time;
-    this.head++;
+  public push(x: number, y: number, z: number, t: number): void {
+    const head = this.meta[0];
+    if (head >= this.capacity) return;
+
+    this.x[head] = x;
+    this.y[head] = y;
+    this.z[head] = z;
+    this.t[head] = t;
+
+    this.meta[0] = head + 1;
   }
+
+  public get head(): number { return this.meta[0]; }
 }

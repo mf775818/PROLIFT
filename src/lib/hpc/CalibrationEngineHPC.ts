@@ -22,32 +22,29 @@ export class CalibrationEngineHPC {
    * 方法論：Data-Oriented Design, Loop Unrolling
    */
   public applyPerspectiveTransform(buffer: TrackingBuffer): void {
-    const data = buffer.data;
-    const len = buffer.head;
+    const { x, y, head } = buffer;
     const m = this.homographyMatrix;
 
-    // 將區域變數提至迴圈外，幫助 JIT 編譯器進行 Register Allocation
-    let x, y, z, w, nx, ny;
+    // 提取矩陣參數到寄存器
+    const m0 = m[0], m1 = m[1], m2 = m[2];
+    const m3 = m[3], m4 = m[4], m5 = m[5];
+    const m6 = m[6], m7 = m[7], m8 = m[8];
 
-    for (let i = 0; i < len; i++) {
-      const offset = i * 4;
-      x = data[offset];
-      y = data[offset + 1];
-      z = data[offset + 2]; // 保留供真實 3D 使用
+    // 高速連續訪問循環
+    for (let i = 0; i < head; i++) {
+      const xi = x[i];
+      const yi = y[i];
 
-      // 矩陣乘法展開 (Matrix Multiplication Unrolling)
-      // [x', y', w'] = H * [x, y, 1]
-      nx = m[0] * x + m[1] * y + m[2];
-      ny = m[3] * x + m[4] * y + m[5];
-      w  = m[6] * x + m[7] * y + m[8];
+      // 矩陣乘法展開
+      const nx = m0 * xi + m1 * yi + m2;
+      const ny = m3 * xi + m4 * yi + m5;
+      const w  = m6 * xi + m7 * yi + m8;
 
-      // 避免除以零的硬體中斷
       const invW = w !== 0 ? 1.0 / w : 1.0;
 
-      // 原地覆寫，達成 Zero-Allocation
-      data[offset] = nx * invW;
-      data[offset + 1] = ny * invW;
-      // Z 軸在多鏡頭立體視覺中會透過對極幾何 (Epipolar) 重新計算
+      // 原地回寫到連續內存區塊
+      x[i] = nx * invW;
+      y[i] = ny * invW;
     }
   }
 }

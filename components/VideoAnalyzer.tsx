@@ -1084,8 +1084,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         const frame = raw[i], sX = smoothedX[i], sY = smoothedY[i];
         
         // 提取計算好的 3D 物理座標
-        const physX = trackingBuffer.data[i * 4];
-        const physY = trackingBuffer.data[i * 4 + 1];
+        const physX = trackingBuffer.x[i];
+        const physY = trackingBuffer.y[i];
         
         const kOffset = i * 4;
         let velocity = outKinetics[kOffset];

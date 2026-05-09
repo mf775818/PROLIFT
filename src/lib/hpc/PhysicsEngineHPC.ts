@@ -12,20 +12,18 @@ export class PhysicsEngineHPC {
     outKinetics: Float32Array, 
     barbellMass: number
   ): void {
-    const data = inputBuffer.data;
-    const len = inputBuffer.head;
+    const { y, t, head: len } = inputBuffer;
     
     if (len < 2) return;
 
-    let prevY = data[1], prevT = data[3];
+    let prevY = y[0], prevT = t[0];
     let currY, currT, dt, invDt, vel, accel, force, power;
     let prevVel = 0;
 
     // 從第二個點開始計算 (Index 1)
     for (let i = 1; i < len; i++) {
-      const offset = i * 4;
-      currY = data[offset + 1];
-      currT = data[offset + 3];
+      currY = y[i];
+      currT = t[i];
       
       dt = currT - prevT;
       // 避免 dt = 0 造成 NaN，並使用乘法代替除法加速
@@ -41,6 +39,7 @@ export class PhysicsEngineHPC {
       power = Math.max(0, force * vel);
 
       // 寫入預分配的輸出陣列
+      const offset = i * 4;
       outKinetics[offset]     = vel;
       outKinetics[offset + 1] = accel;
       outKinetics[offset + 2] = force;
