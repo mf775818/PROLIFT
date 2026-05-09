@@ -1,11 +1,4 @@
-import * as MP4Box from 'mp4box';
-
-interface MP4ArrayBuffer extends ArrayBuffer {
-  fileStart: number;
-}
-type MP4File = any;
-type MP4Info = any;
-type MP4VideoTrack = any;
+import MP4Box, { MP4ArrayBuffer, MP4File, MP4Info, MP4VideoTrack } from 'mp4box';
 
 export class MP4Demuxer {
   private file: MP4File;
@@ -70,7 +63,7 @@ export class MP4Demuxer {
     const trak = this.file.getTrackById(track.id);
     for (const entry of trak.mdia.minf.stbl.stsd.entries) {
       if (entry.avcC || entry.hvcC || entry.vpcC) {
-        const stream = new MP4Box.DataStream(undefined, 0, (MP4Box.DataStream as any).BIG_ENDIAN);
+        const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
         if (entry.avcC) entry.avcC.write(stream);
         else if (entry.hvcC) entry.hvcC.write(stream);
         else if (entry.vpcC) entry.vpcC.write(stream);
