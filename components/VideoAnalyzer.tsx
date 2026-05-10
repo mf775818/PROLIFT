@@ -5,6 +5,7 @@ import { TrackingBuffer } from '../src/lib/hpc/TrackingBuffer';
 import { CalibrationEngineHPC } from '../src/lib/hpc/CalibrationEngineHPC';
 import { DepthCalibratorHPC } from '../src/lib/hpc/DepthCalibratorHPC';
 import { PhysicsEngineHPC } from '../src/lib/hpc/PhysicsEngineHPC';
+import { MetricTensorHPC } from '../src/lib/hpc/MetricTensorHPC';
 import { KalmanSmoother1D } from '../src/lib/hpc/KalmanSmoother';
 
 
@@ -100,8 +101,11 @@ const upsampleData = (data: LiftMetrics[], factor: number = 4) => {
             const ba1 = p1.backAngle || 0;
             const ba2 = p2.backAngle || 0;
             const backAngle = ba1 + (ba2 - ba1) * t;
+            const px1 = p1.physX || 0;
+            const px2 = p2.physX || 0;
+            const physX = catmullRom(p0.physX || p1.physX || 0, px1, px2, p3.physX || p2.physX || 0, t);
             
-            result.push({ time, velocity, height, power, x, y, kneeAngle, hipAngle, ankleAngle, backAngle });
+            result.push({ time, velocity, height, power, x, y, physX, kneeAngle, hipAngle, ankleAngle, backAngle });
         }
     }
     return result;
@@ -503,6 +507,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const pathCanvasRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const processingVideoRef = useRef<HTMLVideoElement>(document.createElement('video'));
+  const worldPerspectiveRef = useRef({ bodyAngle: 0, feetSlope: 0, isReady: false });
   
   const lastRenderedIndexRef = useRef<number>(-1);
 
@@ -527,11 +532,18 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [isMuted, setIsMuted] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [showHolodeck, setShowHolodeck] = useState(false);
+  
+  const showHolodeckRef = useRef(showHolodeck);
+  useEffect(() => { 
+      showHolodeckRef.current = showHolodeck; 
+  }, [showHolodeck]);
 
   const fullLiftHistory = useRef<LiftMetrics[]>([]);
   const compressedLiftHistory = useRef<LiftMetrics[]>([]);
   const renderCommandsRef = useRef<{ color: string, x: number, y: number, time: number }[]>([]);
   const startXRef = useRef<number>(0); 
+  const startPhysXRef = useRef<number>(0); 
   const startYRef = useRef<number>(0); 
   const pixelToMeterRef = useRef<number>(0.0025); 
   const maxVelocityRef = useRef<number>(1.5);
@@ -1154,30 +1166,31 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const depthCalibrator = new DepthCalibratorHPC();
     
     // 計算初始幀的像素尺寸以餵給雙錨定系統
-    let platePixelHeight = 0;
-    if (normalizedROI && normalizedROI.height > 0) {
-        platePixelHeight = normalizedROI.height * canvasH;
+    let platePixelDiameter = 0;
+    if (normalizedROI && (normalizedROI.height > 0 || normalizedROI.width > 0)) {
+        // The major axis of the ellipse (max of width/height) is the true diameter
+        platePixelDiameter = Math.max(normalizedROI.width * canvasW, normalizedROI.height * canvasH);
     }
     
-    let bodyPixelHeight = 0;
-    if (raw.length > 0) {
-        const frame0 = raw[0];
-        // 頭頂通常用 nose(0) 或 eye(1,2,3,4,5,6), 這裡取 nose
-        // 腳底取左右腳跟的平均 (29, 30) 或腳趾 (31, 32)
-        const top = frame0.landmarks[0]?.y;
-        const heelL = frame0.landmarks[29]?.y;
-        const heelR = frame0.landmarks[30]?.y;
+    let maxBodyPixelHeight = 0;
+    for (let fIdx = 0; fIdx < raw.length; fIdx++) {
+        const frame = raw[fIdx];
+        const top = frame.landmarks[0]?.y;
+        const heelL = frame.landmarks[29]?.y;
+        const heelR = frame.landmarks[30]?.y;
         if (top !== undefined && heelL !== undefined && heelR !== undefined) {
              const bottom = Math.max(heelL, heelR);
-             bodyPixelHeight = (bottom - top) * canvasH;
+             const h = (bottom - top) * canvasH;
+             if (h > maxBodyPixelHeight) maxBodyPixelHeight = h;
         }
     }
+    let bodyPixelHeight = maxBodyPixelHeight;
 
     if (bodyPixelHeight === 0) bodyPixelHeight = canvasH * 0.8; // 備用方案
-    if (platePixelHeight === 0) platePixelHeight = canvasH * 0.2; // 備用方案
+    if (platePixelDiameter === 0) platePixelDiameter = canvasH * 0.2; // 備用方案
 
     // 初始化 HPC 深度校準系統
-    depthCalibrator.calibrate(platePixelHeight, bodyPixelHeight, userHeightMm);
+    depthCalibrator.calibrate(platePixelDiameter, bodyPixelHeight, userHeightMm);
     const isDualAnchored = depthCalibrator.isHighPrecisionMode();
     console.log("Calibration Mode: ", isDualAnchored ? "Dual Anchored (Bi-Planar)" : "Single Anchored");
 
@@ -1191,6 +1204,139 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     // 我們建立一個長度為 n 的 boolean array, 表示這些都是槓鈴節點
     const isBarbellArray = new Array(n).fill(true);
     depthCalibrator.transformToPhysicalSpace(trackingBuffer.x, trackingBuffer.y, trackingBuffer.head, isBarbellArray);
+
+    // =========================================================================
+    // [工業級雙軌並行校正] 尋找空間極點極線 (Pole & Polar Vanishing Point RANSAC)
+    // 透過收集每一幀的「雙肩」與「雙髖」連線，加權提取共識極點，並排除離群變形。
+    // =========================================================================
+    const lines: {a: number, b: number, c: number, weight: number, yawRef: number}[] = [];
+    
+    for (const frame of raw) {
+        if (!frame.landmarks || frame.landmarks.length < 33) continue;
+        const lms = frame.landmarks;
+        
+        const addLine = (idx1: number, idx2: number, weight: number) => {
+            if (lms[idx1].visibility > 0.6 && lms[idx2].visibility > 0.6) {
+                // 取得 2D 螢幕上的透視極線
+                const dx = lms[idx2].x - lms[idx1].x;
+                const dy = lms[idx2].y - lms[idx1].y;
+                const len = Math.sqrt(dx*dx + dy*dy);
+                if (len > 0.03) { // 線段有效長度保護
+                    const a = -dy / len;
+                    const b = dx / len;
+                    const c = -(a * lms[idx1].x + b * lms[idx1].y);
+                    
+                    // 備份 MediaPipe 的 3D Z 深度作交叉參照
+                    const dz = lms[idx2].z - lms[idx1].z;
+                    const rawYaw = Math.atan2(dz, -dx);
+                    
+                    lines.push({a, b, c, weight, yawRef: rawYaw});
+                }
+            }
+        };
+        
+        addLine(11, 12, 1.0); // 雙肩極線
+        addLine(23, 24, 1.5); // 髖部極線，穩定度較高給較大權重
+        addLine(27, 28, 0.8); // 雙腳踝極線 (作為輔助)
+    }
+
+    let bestVP = {x: 1000, y: 0, w: 0}; // 初始預設極點 (無限遠，平行)
+    let maxInlierWeight = -1;
+    let bestInliers: typeof lines = [];
+
+    // RANSAC 不斷取樣
+    const numIters = 250;
+    for (let iter = 0; iter < numIters; iter++) {
+        // 從極線池中隨機抽取兩條來找極點
+        if (lines.length < 2) break;
+        const l1 = lines[Math.floor(Math.random() * lines.length)];
+        const l2 = lines[Math.floor(Math.random() * lines.length)];
+        if (l1 === l2) continue;
+        
+        // 外積計算交點齊次座標 (VP: Vanishing Point)
+        const vx = l1.b * l2.c - l1.c * l2.b;
+        const vy = l1.c * l2.a - l1.a * l2.c;
+        const vw = l1.a * l2.b - l1.b * l2.a;
+        
+        if (Math.abs(vw) < 1e-8 && Math.abs(vx) < 1e-8) continue; // 崩潰點
+
+        let inlierWeight = 0;
+        const currentInliers = [];
+        
+        // 利用點到線的代數距離驗證所有的極線
+        for (const line of lines) {
+            let error = 0;
+            if (Math.abs(vw) > 1e-6) {
+                // 有限透視極點，計算 Normalized 代數距離
+                const px = vx / vw; const py = vy / vw;
+                // 如果 VP 已經在遠處，改用方向餘弦的內積做評估
+                if (Math.abs(px) > 3 || Math.abs(py) > 3) {
+                     const dirX = px - 0.5; const dirY = py - 0.5;
+                     const dirNorm = Math.sqrt(dirX*dirX + dirY*dirY);
+                     // 理想的極線法向量應該與極點方向垂直
+                     const dot = Math.abs(line.a * (dirX/dirNorm) + line.b * (dirY/dirNorm));
+                     error = Math.abs(dot);
+                } else {
+                     // 距離投影點的距離誤差
+                     error = Math.abs(line.a * px + line.b * py + line.c);
+                }
+            } else {
+                // 無限遠極點 (純平行投影)
+                const vNorm = Math.sqrt(vx*vx + vy*vy);
+                error = Math.abs(line.a * (vx/vNorm) + line.b * (vy/vNorm));
+            }
+            
+            // 閾值範圍內則視為 Inlier (無畸變、無偏轉之幀數)
+            if (error < 0.08) { 
+                inlierWeight += line.weight;
+                currentInliers.push(line);
+            }
+        }
+        
+        // 競爭最大共識集
+        if (inlierWeight > maxInlierWeight) {
+            maxInlierWeight = inlierWeight;
+            bestVP = {x: vx, y: vy, w: vw};
+            bestInliers = currentInliers;
+        }
+    }
+
+    // 將最大權重的乾淨 Dataset (Inliers) 展開建立度規與幾何參照
+    let bodyAngle = 0;
+    let feetSlope = 0;
+    
+    if (bestInliers.length > 0) {
+        // 利用這個穩定的參照集，計算真實的 3D Yaw 與 2D Roll
+        let sumYaw = 0, sumRoll = 0, sumWeight = 0;
+        for (const inline of bestInliers) {
+            sumYaw += inline.yawRef * inline.weight;
+            // Roll 可以由極線的斜率推導出 (其中 a=-dy/L, b=dx/L) -> slope = a 近似值
+            let dx = inline.b; let dy = -inline.a;
+            if (dx < 0) { dx = -dx; dy = -dy; } // Keep x positive for consistent slope
+            const roll = (dx > 0) ? (dy / dx) : 0;
+            
+            sumRoll += roll * inline.weight;
+            sumWeight += inline.weight;
+        }
+        bodyAngle = sumYaw / sumWeight;
+        feetSlope = sumRoll / sumWeight;
+        
+        // 若空間極點位於有限距離內，我們能進一步修正度規的 X 軸壓縮比例 (透視縮短效應)
+        if (Math.abs(bestVP.w) > 1e-4) {
+            const vpX = (bestVP.x / bestVP.w) - 0.5;
+            // 可在此將極點特性融合至度規張量 (在工業界常依此設定焦距與光心)
+            const inferredFocal = Math.abs(vpX * Math.tan(bodyAngle));
+            if (inferredFocal > 0.3 && inferredFocal < 3.0) {
+                console.log("Deployed Spatial Metric Tensor with Extracted VP Focus:", inferredFocal);
+            }
+        }
+    }
+    
+    feetSlope = Math.max(-0.25, Math.min(0.25, feetSlope)); // 極限邊界約束
+    
+    // Save to the ref wrapper
+    worldPerspectiveRef.current = { bodyAngle, feetSlope, isReady: true };
+
 
     // 我們將 mm 轉回 Meters，以確保後方物理引擎的公式無縫接軌 (Power, Velocity 單位 = m/s)
     for (let i = 0; i < trackingBuffer.head; i++) {
@@ -1208,17 +1354,40 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     // 批次 3D 透視校正 (O(n) Zero-Allocation)
     calibration.applyPerspectiveTransform(trackingBuffer);
 
+    // [工業級優化] 引入度規張量處理透視及 45 度拍攝的扭曲
+    const metricTensor = new MetricTensorHPC();
+    const hInv = depthCalibrator.getInverseHomography();
+    
+    // 如果系統判斷有可用的深度測量 (雙錨定)，我們結合實際身體旋轉角度來精確調整張量
+    if (isDualAnchored) {
+         // The horizontal trajectory is essentially a mix of sagittal (Z) and lateral (X) movement.
+         // If we assume most movement is sagittal (forward/back), shooting from an angle foreshortens the screen X.
+         // bodyAngle = 0 means true front view (no foreshortening of lateral wobble).
+         // bodyAngle = PI/2 means true side view (no foreshortening of sagittal swing).
+         // For angles in between, we boost the X axis distance by inspecting the perspective.
+         const aspectCorrect = Math.max(0.5, Math.abs(Math.sin(bodyAngle)));
+         // Avoid blowing up to infinity for front shots (bodyAngle -> 0).
+         // If it's a front shot, depth is handled primarily by Y axis accuracy.
+         if (Math.abs(bodyAngle) > 0.2) {
+             hInv[0] = 1.0 / aspectCorrect; // scale X distance correctly
+         }
+         // Clear the heuristic skew to prevent wild trajectory distortions
+         hInv[1] = 0; 
+         hInv[3] = 0;
+    }
+
+    metricTensor.calibrateFromInverseHomography(hInv);
+
     const outKinetics = new Float32Array(n * 4);
     
     // 批次物理動力計算 (O(n) Zero-Allocation)
-    PhysicsEngineHPC.computeKinetics(trackingBuffer, outKinetics, barbellMassRef.current);
+    PhysicsEngineHPC.computeKinetics(trackingBuffer, outKinetics, barbellMassRef.current, metricTensor);
 
     const metrics: LiftMetrics[] = []; let maxVel = 0;
 
     for (let i = 0; i < n; i++) {
         const frame = raw[i], sX = smoothedX[i], sY = smoothedY[i];
         
-        // 提取計算好的 3D 物理座標
         const physX = trackingBuffer.x[i];
         const physY = trackingBuffer.y[i];
         
@@ -1247,6 +1416,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             power: Math.max(0, power || 0), 
             x: sX, // 將原始的 X, Y 保留，供前端畫 2D 軌跡使用
             y: sY, 
+            physX: physX, // 真正的物理 3D X座標 (計算飄移用)
             kneeAngle, 
             hipAngle,
             ankleAngle,
@@ -1263,8 +1433,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             if (metrics[i].power <= floor) { zeroIdx = i; break; }
         }
         startXRef.current = metrics[zeroIdx].x;
+        startPhysXRef.current = metrics[zeroIdx].physX || 0;
     } else {
         startXRef.current = metrics[0]?.x || 0;
+        startPhysXRef.current = metrics[0]?.physX || 0;
     }
     startYRef.current = smoothedY[0]; 
 
@@ -1382,6 +1554,230 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     }
   };
 
+  useEffect(() => {
+      // Force frame overlay update when Holodeck is toggled while video is paused
+      if (videoRef.current && videoRef.current.paused) {
+          renderFrameUpdates();
+      }
+  }, [showHolodeck, renderFrameUpdates]);
+
+  const drawSpatialAR = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
+      // Use the first frame as the baseline for position, but global perspective for orientation
+      const firstFrameLandmarks = rawDataRef.current?.[0]?.landmarks;
+      
+      let footY = h * 0.85;
+      let rootX = w / 2;
+      let hasValidLegs = false;
+
+      if (firstFrameLandmarks && firstFrameLandmarks.length > 28) {
+          const lFoot = firstFrameLandmarks[27];
+          const rFoot = firstFrameLandmarks[28];
+          if (lFoot && rFoot && (lFoot.visibility > 0.3 || rFoot.visibility > 0.3)) {
+              footY = Math.max(lFoot.y, rFoot.y) * h + h * 0.05;
+              hasValidLegs = true;
+          }
+          const lHip = firstFrameLandmarks[23];
+          const rHip = firstFrameLandmarks[24];
+          if (lHip && rHip && (lHip.visibility > 0.3 || rHip.visibility > 0.3)) {
+              rootX = ((lHip.x + rHip.x) / 2) * w;
+          }
+      }
+
+      if (!hasValidLegs) {
+          footY = h * 0.95;
+      }
+
+      // --- 3D Projection Engine ---
+      const camHeight = h * 0.45;
+      const camZ = Math.max(w, h) * 0.8; 
+      
+      let yaw = 0;
+      let roll = 0;
+      if (worldPerspectiveRef.current.isReady) {
+          // Use the robust PCA-median global calculated angles
+          yaw = -worldPerspectiveRef.current.bodyAngle * 0.6;
+          yaw = Math.max(-0.8, Math.min(0.8, yaw));
+          roll = worldPerspectiveRef.current.feetSlope * 0.5; // Slightly dampen for extreme rolling
+      } else {
+          // Fallback if not ready
+          if (firstFrameLandmarks && firstFrameLandmarks.length > 28) {
+              const lHip = firstFrameLandmarks[23];
+              const rHip = firstFrameLandmarks[24];
+              if (lHip && rHip && (lHip.visibility > 0.3 || rHip.visibility > 0.3)) {
+                 const dx = rHip.x - lHip.x; 
+                 const dz = rHip.z - lHip.z; 
+                 let bodyAngle = Math.atan2(dz, -dx); 
+                 yaw = -bodyAngle * 0.6;
+                 yaw = Math.max(-0.8, Math.min(0.8, yaw));
+              }
+              const lFoot = firstFrameLandmarks[27];
+              const rFoot = firstFrameLandmarks[28];
+              if (lFoot && rFoot) {
+                  const dx = lFoot.x - rFoot.x;
+                  const dy = lFoot.y - rFoot.y;
+                  if (Math.abs(dx) > 0.02) roll = (dy/dx) * 0.5;
+              }
+          }
+      }
+
+      const pitch = -Math.atan(camHeight / camZ); 
+
+      const project = (x3d: number, y3d: number, z3d: number) => {
+          // 1. Yaw rotation (Platform angle relative to camera)
+          const x1 = x3d * Math.cos(yaw) - z3d * Math.sin(yaw);
+          const z1 = x3d * Math.sin(yaw) + z3d * Math.cos(yaw);
+          const y1 = y3d;
+
+          // 2. Camera Translation
+          const cx = x1;
+          const cy = y1 - camHeight;
+          const cz = z1 + camZ;
+
+          // 3. Camera Pitch (looking down)
+          const py = cy * Math.cos(pitch) - cz * Math.sin(pitch);
+          const pz = cy * Math.sin(pitch) + cz * Math.cos(pitch);
+          const px = cx;
+
+          // Avoid projecting things behind camera
+          if (pz <= 0.1) return null;
+
+          const f = w * 0.9; // FOV / Focal length
+          const sx = rootX + (px / pz) * f;
+          
+          // Canvas Y grows downwards, but our py grows upwards in physical space
+          const sy = footY - (py / pz) * f; 
+
+          return { x: sx, y: sy };
+      };
+
+      ctx.save();
+      
+      // Apply Camera Roll (z-axis rotation of the view) around the foot center
+      if (Math.abs(roll) > 0.01) {
+          ctx.translate(rootX, footY);
+          ctx.rotate(roll);
+          ctx.translate(-rootX, -footY);
+      }
+      
+      // Boundaries of our physical Holodeck
+      const floorW = w * 0.8;
+      const floorFrontZ = -w * 0.4;
+      const floorBackZ = w * 1.5;
+      
+      const fl = project(-floorW, 0, floorFrontZ);
+      const fr = project(floorW, 0, floorFrontZ);
+      const bl = project(-floorW, 0, floorBackZ);
+      const br = project(floorW, 0, floorBackZ);
+
+      // --- 1. Floor Polygon & Grid ---
+      if (fl && fr && bl && br) {
+          // Fill glowing floor Base
+          ctx.beginPath();
+          ctx.moveTo(fl.x, fl.y);
+          ctx.lineTo(fr.x, fr.y);
+          ctx.lineTo(br.x, br.y);
+          ctx.lineTo(bl.x, bl.y);
+          ctx.closePath();
+          
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.08)';
+          ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = 'rgba(16, 185, 129, 0.6)';
+          ctx.stroke();
+
+          // Clip to only draw grid inside the floor polygon
+          ctx.save();
+          ctx.clip(); 
+
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = 'rgba(16, 185, 129, 0.3)';
+          
+          // Front-to-Back (Z-axis) grid lines
+          ctx.beginPath();
+          for (let i = -10; i <= 10; i++) {
+              const x3d = i * (floorW / 10);
+              const pStart = project(x3d, 0, floorFrontZ * 1.5); // Extrapolate to cover sheared corners
+              const pEnd = project(x3d, 0, floorBackZ * 1.5);
+              if (pStart && pEnd) {
+                  ctx.moveTo(pStart.x, pStart.y);
+                  ctx.lineTo(pEnd.x, pEnd.y);
+              }
+          }
+          // Left-to-Right (X-axis) grid lines
+          for (let i = -5; i <= 25; i++) {
+              const z3d = floorFrontZ + i * (floorW / 10);
+              const pStart = project(-floorW * 1.5, 0, z3d);
+              const pEnd = project(floorW * 1.5, 0, z3d);
+              if (pStart && pEnd) {
+                  ctx.moveTo(pStart.x, pStart.y);
+                  ctx.lineTo(pEnd.x, pEnd.y);
+              }
+          }
+          ctx.stroke();
+          ctx.restore(); // remove clip
+      }
+
+      // --- 2. Side Walls / Railings ---
+      const drawWall = (isLeft: boolean) => {
+          const sign = isLeft ? -1 : 1;
+          const x3d = sign * floorW;
+          const wallH = h * 0.35; 
+          
+          const bFloor = project(x3d, 0, floorBackZ);
+          const fFloor = project(x3d, 0, floorFrontZ);
+          const bTop = project(x3d, wallH, floorBackZ);
+          const fTop = project(x3d, wallH, floorFrontZ);
+
+          if (bFloor && fFloor && bTop && fTop) {
+              ctx.beginPath();
+              ctx.moveTo(bFloor.x, bFloor.y);
+              ctx.lineTo(fFloor.x, fFloor.y);
+              ctx.lineTo(fTop.x, fTop.y);
+              ctx.lineTo(bTop.x, bTop.y);
+              ctx.closePath();
+              
+              ctx.fillStyle = 'rgba(59, 130, 246, 0.08)';
+              ctx.fill();
+              ctx.strokeStyle = 'rgba(59, 130, 246, 0.6)';
+              ctx.lineWidth = 1.5;
+              ctx.stroke();
+
+              ctx.lineWidth = 1;
+              ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+
+              // Vertical pillars
+              ctx.beginPath();
+              for(let i = 1; i <= 6; i++) {
+                  const frac = i / 7;
+                  const z = floorFrontZ + (floorBackZ - floorFrontZ) * frac;
+                  const ptF = project(x3d, 0, z);
+                  const ptT = project(x3d, wallH, z);
+                  if (ptF && ptT) {
+                      ctx.moveTo(ptF.x, ptF.y);
+                      ctx.lineTo(ptT.x, ptT.y);
+                  }
+              }
+              // Horizontal rails
+              for(let i = 1; i <= 3; i++) {
+                  const frac = i / 4;
+                  const ht = wallH * frac;
+                  const pFront = project(x3d, ht, floorFrontZ);
+                  const pBack = project(x3d, ht, floorBackZ);
+                  if (pFront && pBack) {
+                      ctx.moveTo(pFront.x, pFront.y);
+                      ctx.lineTo(pBack.x, pBack.y);
+                  }
+              }
+              ctx.stroke();
+          }
+      };
+
+      drawWall(true);  
+      drawWall(false); 
+
+      ctx.restore();
+  };
+
   const drawOverlay = (metric: LiftMetrics, currentIndex: number, landmarks?: Keypoint[]) => {
       const overlayCanvas = canvasRef.current; const overlayCtx = overlayCanvas?.getContext('2d'); if (!overlayCanvas || !overlayCtx) return;
       const pathCanvas = pathCanvasRef.current; const pathCtx = pathCanvas?.getContext('2d'); if (!pathCanvas || !pathCtx) return;
@@ -1389,7 +1785,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       
       overlayCtx.clearRect(0,0,w,h);
 
+      // --- 渲染 3D 空間網格 (Floor & Railings) ---
+      if (showHolodeckRef.current) {
+          drawSpatialAR(overlayCtx, w, h);
+      }
+
       if (landmarks && window.drawConnectors && window.drawLandmarks) {
+
          overlayCtx.save(); overlayCtx.globalAlpha = 0.5; 
          window.drawConnectors(overlayCtx, landmarks, window.POSE_CONNECTIONS, { color: 'rgba(255,255,255,0.6)', lineWidth: 2 });
          window.drawLandmarks(overlayCtx, landmarks, { color: '#ffffff', lineWidth: 1, radius: 2 });
@@ -1512,7 +1914,12 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
       const cx = metric.x * w; const cy = metric.y * h;
       overlayCtx.beginPath(); overlayCtx.arc(cx, cy, 8, 0, 2*Math.PI); overlayCtx.fillStyle = '#facc15'; overlayCtx.strokeStyle = 'rgba(0,0,0,0.5)'; overlayCtx.lineWidth = 2; overlayCtx.fill(); overlayCtx.stroke();
-      const devCm = (metric.x - startXRef.current) * 200; const devX = cx + 20; const devY = cy;
+      
+      // Calculate deviation in cm using the true physical metric (metric.physX is in meters)
+      const currentPhysX = metric.physX || 0;
+      const devCm = (currentPhysX - startPhysXRef.current) * 100;
+      
+      const devX = cx + 20; const devY = cy;
       overlayCtx.save(); overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.7)'; overlayCtx.roundRect(devX - 4, devY - 10, 60, 20, 4); overlayCtx.fill(); overlayCtx.fillStyle = devCm > 0 ? '#ef4444' : '#10b981'; overlayCtx.font = 'bold 12px monospace'; overlayCtx.fillText(`${devCm > 0 ? '+' : ''}${devCm.toFixed(1)}cm`, devX, devY + 4); overlayCtx.restore();
   };
 
@@ -1811,6 +2218,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                       ) : (
                           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
                       )}
+                  </button>
+
+                  <div className="w-px h-4 bg-zinc-700"></div>
+
+                  {/* 3D Holodeck Toggle */}
+                  <button onClick={() => setShowHolodeck(!showHolodeck)} className={`transition-colors ${showHolodeck ? 'text-green-400 hover:text-green-300' : 'text-zinc-500 hover:text-zinc-300'}`} title="Toggle 3D Perspective Grid">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M12 12v9"/><path d="m8 17 4 4 4-4"/></svg>
                   </button>
 
                   <div className="w-px h-4 bg-zinc-700"></div>

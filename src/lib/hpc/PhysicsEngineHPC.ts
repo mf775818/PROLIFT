@@ -1,4 +1,5 @@
 import { TrackingBuffer } from './TrackingBuffer';
+import { MetricTensorHPC } from './MetricTensorHPC';
 
 export class PhysicsEngineHPC {
   private static readonly GRAVITY = 9.80665;
@@ -10,18 +11,20 @@ export class PhysicsEngineHPC {
   public static computeKinetics(
     inputBuffer: TrackingBuffer, 
     outKinetics: Float32Array, 
-    barbellMass: number
+    barbellMass: number,
+    metricTensor?: MetricTensorHPC
   ): void {
-    const { y, t, head: len } = inputBuffer;
+    const { x, y, t, head: len } = inputBuffer;
     
     if (len < 2) return;
 
-    let prevY = y[0], prevT = t[0];
-    let currY, currT, dt, invDt, vel, accel, force, power;
+    let prevX = x[0], prevY = y[0], prevT = t[0];
+    let currX, currY, currT, dt, invDt, vel, accel, force, power;
     let prevVel = 0;
 
     // 從第二個點開始計算 (Index 1)
     for (let i = 1; i < len; i++) {
+      currX = x[i];
       currY = y[i];
       currT = t[i];
       
@@ -31,7 +34,15 @@ export class PhysicsEngineHPC {
       
       // 運動學計算 (Kinematics)
       // Y 軸位移，假設向上為正
-      vel = (currY - prevY) * invDt; 
+      if (metricTensor) {
+          // [工業級優化] 使用度規張量計算真實 3D 距離偏移量
+          const trueDistance = metricTensor.computePhysicalDistance(prevX, prevY, currX, currY);
+          // 保留 Y 軸的運動方向 (向上為正, 向下為負)
+          const signY = (currY - prevY) >= 0 ? 1 : -1;
+          vel = signY * trueDistance * invDt;
+      } else {
+          vel = (currY - prevY) * invDt; 
+      }
       accel = (vel - prevVel) * invDt;
 
       // 動力學計算 (Kinetics)
@@ -49,6 +60,7 @@ export class PhysicsEngineHPC {
       outKinetics[offset + 3] = power;
 
       // 更新前一幀狀態
+      prevX = currX;
       prevY = currY;
       prevT = currT;
       prevVel = vel;

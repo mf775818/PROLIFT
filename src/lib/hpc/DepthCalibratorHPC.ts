@@ -83,4 +83,36 @@ export class DepthCalibratorHPC {
     public isHighPrecisionMode(): boolean {
         return this.calibrationState[3] === 1.0;
     }
+
+    /**
+     * 計算影像平面轉換為真實 3D 空間的逆變換矩陣 H_inv (支援度規張量初始化)
+     * 在雙錨定模式下，H_inv 會利用身高的深度計算出透視張量的非對角項 (Skew/Foreshortening)
+     */
+    public getInverseHomography(): Float64Array {
+        const plateScale = this.calibrationState[0];
+        const bodyScale  = this.calibrationState[1];
+        const isDualAnchored = this.calibrationState[3] === 1.0;
+        
+        // 因為 trackingBuffer在傳入物理引擎前，已經被整體乘上了 plateScale / 1000 (轉為 Meter)，
+        // 所以度規張量面對的基底座標系(Basis)的單位已經是(基於槓片的)公尺。
+        // 我們這裡輸出的 H_inv 是用來修正「相對」於槓片的透視變形。
+        const relativeBodyScale = plateScale > 0 ? bodyScale / plateScale : 1.0;
+        
+        // H_inv 是一維 Float64Array 3x3 矩陣
+        const H_inv = new Float64Array([
+            1.0, 0, 0,
+            0, 1.0, 0, 
+            0, 0, 1
+        ]);
+        
+        // 如果是雙錨定 (45 度拍攝)，深度的比例差異 (relativeBodyScale - 1) 代表了相對透視變形
+        if (isDualAnchored) {
+             const skew = (relativeBodyScale - 1.0) * 0.5;
+             H_inv[1] = skew; // H_inv_01 (y 對 x 的協方差生成源)
+             H_inv[3] = skew; // H_inv_10
+             H_inv[4] = relativeBodyScale;  // Y axis scale correction
+        }
+        
+        return H_inv;
+    }
 }
