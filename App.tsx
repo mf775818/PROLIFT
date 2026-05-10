@@ -246,7 +246,7 @@ const App = () => {
       setSeekRequest({ time, nonce: Date.now() });
   }, []);
 
-  // --- RESIZE LOGIC ---
+  // --- RESIZE LOGIC (INDUSTRIAL GRADE: ZERO REFLOW) ---
   const handleResizeStart = (type: 'right' | 'mobile' | 'chart', e: React.MouseEvent | React.TouchEvent) => {
       e.preventDefault();
       setIsResizing(true);
@@ -258,30 +258,48 @@ const App = () => {
       const startChartH = layout.chartHeightPct;
       const containerH = window.innerHeight;
 
+      // Get root element to inject CSS Variables
+      const root = document.documentElement;
+
       const handleMove = (moveEvent: MouseEvent | TouchEvent) => {
-          const currentX = 'touches' in moveEvent ? moveEvent.touches[0].clientX : (moveEvent as MouseEvent).clientX;
-          const currentY = 'touches' in moveEvent ? moveEvent.touches[0].clientY : (moveEvent as MouseEvent).clientY;
-          
-          if (type === 'right') {
-              const delta = startX - currentX; // Right side logic inverted
-              setLayout(prev => ({ ...prev, rightWidth: Math.max(50, startRight + delta) }));
-          } else if (type === 'mobile') {
-              const deltaY = currentY - startY;
-              const deltaPct = (deltaY / containerH) * 100;
-              setLayout(prev => ({ ...prev, mobileVideoHeightPct: Math.max(20, Math.min(80, startMobileH + deltaPct)) }));
-          } else if (type === 'chart') {
-              const deltaY = currentY - startY;
-              const deltaPct = (deltaY / containerH) * 100;
-              setLayout(prev => ({ ...prev, chartHeightPct: Math.max(20, Math.min(80, startChartH + deltaPct)) }));
-          }
+          // Use requestAnimationFrame to throttle and ensure DOM writes happen once per frame
+          requestAnimationFrame(() => {
+              const currentX = 'touches' in moveEvent ? moveEvent.touches[0].clientX : (moveEvent as MouseEvent).clientX;
+              const currentY = 'touches' in moveEvent ? moveEvent.touches[0].clientY : (moveEvent as MouseEvent).clientY;
+              
+              if (type === 'right') {
+                  const delta = startX - currentX; // Right side logic inverted
+                  const newWidth = Math.max(50, startRight + delta);
+                  // [Performance] Bypass React, directly manipulate CSS variable
+                  root.style.setProperty('--sidebar-right-width', `${newWidth}px`);
+              } else if (type === 'mobile' || type === 'chart') {
+                  const deltaY = currentY - startY;
+                  const deltaPct = (deltaY / containerH) * 100;
+                  const newPct = type === 'mobile' 
+                      ? Math.max(20, Math.min(80, startMobileH + deltaPct))
+                      : Math.max(20, Math.min(80, startChartH + deltaPct));
+                  
+                  const propName = type === 'mobile' ? '--mobile-video-height' : '--chart-height';
+                  root.style.setProperty(propName, `${newPct}%`);
+              }
+          });
       };
 
-      const handleUp = () => {
+      const handleUp = (upEvent: MouseEvent | TouchEvent) => {
           setIsResizing(false);
           window.removeEventListener('mousemove', handleMove);
           window.removeEventListener('mouseup', handleUp);
           window.removeEventListener('touchmove', handleMove);
           window.removeEventListener('touchend', handleUp);
+
+          // [State Sync] Write back to React State after drag ends to maintain consistency
+          const getVal = (name: string) => parseFloat(root.style.getPropertyValue(name));
+          setLayout(prev => ({
+              ...prev,
+              rightWidth: getVal('--sidebar-right-width') || prev.rightWidth,
+              mobileVideoHeightPct: getVal('--mobile-video-height') || prev.mobileVideoHeightPct,
+              chartHeightPct: getVal('--chart-height') || prev.chartHeightPct
+          }));
       };
 
       window.addEventListener('mousemove', handleMove);
@@ -386,7 +404,7 @@ const App = () => {
             className={`relative flex-none lg:flex-1 w-full bg-black flex items-center justify-center overflow-hidden border-b lg:border-b-0 border-zinc-800 scrollbar-hide min-w-0 min-h-0 ${isResizing ? 'pointer-events-none' : ''}`}
             style={{ 
                 // Mobile: Dynamic Height | Desktop: Auto Fill
-                height: window.innerWidth < 1024 ? `${layout.mobileVideoHeightPct}dvh` : 'auto' 
+                height: window.innerWidth < 1024 ? `var(--mobile-video-height, ${layout.mobileVideoHeightPct}dvh)` : 'auto' 
             }}
         >
            <VideoAnalyzer 
@@ -463,13 +481,13 @@ const App = () => {
         {/* RIGHT SIDEBAR / MOBILE CONTENT AREA */}
         <aside 
             className={`flex-col lg:flex-none lg:h-full w-full bg-zinc-900 lg:border-l lg:border-zinc-800 overflow-hidden lg:relative shrink-0 ${activeTab ? 'flex flex-1' : 'hidden lg:flex'}`}
-            style={window.innerWidth < 1024 ? {} : { width: layout.rightWidth }}
+            style={window.innerWidth < 1024 ? {} : { width: `var(--sidebar-right-width, ${layout.rightWidth}px)` }}
         >
           
           {/* Chart Section */}
           <div 
             className={`flex-col min-h-[200px] lg:min-h-0 border-b border-zinc-800 ${activeTab === 'chart' ? 'flex flex-1 lg:flex-none' : 'hidden lg:flex lg:flex-none'} ${isResizing ? 'pointer-events-none' : ''}`}
-            style={window.innerWidth < 1024 ? {} : { height: `${layout.chartHeightPct}%` }}
+            style={window.innerWidth < 1024 ? {} : { height: `var(--chart-height, ${layout.chartHeightPct}%)` }}
           >
              <div className="p-3 bg-zinc-800/30 border-b border-zinc-800 flex justify-between items-center">
                  <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">

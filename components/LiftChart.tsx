@@ -355,15 +355,33 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       }
   };
   
+  // rAF for high-performance hover debounce (zero layout thrashing)
+  const hoverRafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+     return () => {
+         if (hoverRafRef.current !== null) {
+             cancelAnimationFrame(hoverRafRef.current);
+         }
+     };
+  }, []);
+
   const handleTooltip = (props: any) => {
-    if (props.active && props.payload && props.payload.length) {
-      const metric = props.payload[0].payload as ProcessedLiftMetrics;
-      hoveredMetricRef.current = metric;
-      if (onCursorMove) onCursorMove(metric);
-    } else {
-      hoveredMetricRef.current = null;
-      if (onCursorMove) onCursorMove(null);
+    if (hoverRafRef.current !== null) {
+        cancelAnimationFrame(hoverRafRef.current);
     }
+
+    hoverRafRef.current = requestAnimationFrame(() => {
+        hoverRafRef.current = null;
+        if (props.active && props.payload && props.payload.length) {
+            const metric = props.payload[0].payload as ProcessedLiftMetrics;
+            hoveredMetricRef.current = metric;
+            if (onCursorMove) onCursorMove(metric);
+        } else {
+            hoveredMetricRef.current = null;
+            if (onCursorMove) onCursorMove(null);
+        }
+    });
   };
   
   const currentPoint = useMemo(() => {

@@ -959,18 +959,25 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
        setTimeout(() => { if (!resolved) { handler(); } }, 2000);
     });
 
-    while (currentTime <= duration && frameIndex < maxFrames) {
-       if (!isAnalyzingRef.current) {
-          console.log("Analysis cancelled by user.");
-          break;
-       }
-       // Yield to browser's render pipeline to keep UI (progress bar) perfectly smooth
-       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
-       
-       try {
-           await waitForFrame(currentTime);
+    const yieldToMain = () => new Promise<void>(resolve => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => resolve();
+        channel.port2.postMessage(null);
+    });
+
+    try {
+        while (currentTime <= duration && frameIndex < maxFrames) {
+           if (!isAnalyzingRef.current) {
+              console.log("Analysis cancelled by user.");
+              break;
+           }
+           // [Performance] Sub-millisecond yielding via MessageChannel instead of rAF+setTimeout
+           await yieldToMain();
            
-           if (currentTime === 0 && ctx) {
+           try {
+               await waitForFrame(currentTime);
+               
+               if (currentTime === 0 && ctx) {
              const vWidth = vid.videoWidth || 1;
              const vHeight = vid.videoHeight || 1;
              const aspect = vWidth / vHeight;
@@ -1072,9 +1079,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
        setProgress(Math.max(0, Math.min(100, Math.round((currentTime / duration) * 100))));
        currentTime += step; 
        frameIndex++;
+        }
+    } finally {
+        cvTracker.destroy();
     }
     
-    cvTracker.destroy();
     if (isAnalyzingRef.current) {
         finalizeAnalysis();
         isAnalyzingRef.current = false;
