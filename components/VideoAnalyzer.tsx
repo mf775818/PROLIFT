@@ -1742,6 +1742,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                              setAnalysisState(AnalysisState.IDLE);
                              isAnalyzingRef.current = false;
                              onResetRef.current?.();
+                             onAnalysisCompleteRef.current([]);
                          }} 
                          className="mt-6 text-[10px] text-zinc-500 hover:text-red-400 underline underline-offset-4 tracking-widest"
                       >
