@@ -78,7 +78,6 @@ const App = () => {
 
   // --- RESIZABLE LAYOUT STATE ---
   const [layout, setLayout] = useState({
-      leftWidth: 260,
       rightWidth: 380,
       mobileVideoHeightPct: 45, // 45% height by default on mobile
       chartHeightPct: 55 // 55% height by default on desktop
@@ -248,13 +247,12 @@ const App = () => {
   }, []);
 
   // --- RESIZE LOGIC ---
-  const handleResizeStart = (type: 'left' | 'right' | 'mobile' | 'chart', e: React.MouseEvent | React.TouchEvent) => {
+  const handleResizeStart = (type: 'right' | 'mobile' | 'chart', e: React.MouseEvent | React.TouchEvent) => {
       e.preventDefault();
       setIsResizing(true);
       
       const startX = 'touches' in e ? e.touches[0].clientX : e.clientX;
       const startY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-      const startLeft = layout.leftWidth;
       const startRight = layout.rightWidth;
       const startMobileH = layout.mobileVideoHeightPct;
       const startChartH = layout.chartHeightPct;
@@ -264,10 +262,7 @@ const App = () => {
           const currentX = 'touches' in moveEvent ? moveEvent.touches[0].clientX : (moveEvent as MouseEvent).clientX;
           const currentY = 'touches' in moveEvent ? moveEvent.touches[0].clientY : (moveEvent as MouseEvent).clientY;
           
-          if (type === 'left') {
-              const delta = currentX - startX;
-              setLayout(prev => ({ ...prev, leftWidth: Math.max(50, startLeft + delta) }));
-          } else if (type === 'right') {
+          if (type === 'right') {
               const delta = startX - currentX; // Right side logic inverted
               setLayout(prev => ({ ...prev, rightWidth: Math.max(50, startRight + delta) }));
           } else if (type === 'mobile') {
@@ -298,8 +293,8 @@ const App = () => {
   return (
     <div className={`h-[100dvh] w-full flex flex-col bg-zinc-950 text-white font-sans overflow-hidden ${isResizing ? 'cursor-grabbing select-none' : ''}`}>
       {/* Mobile/Desktop Header */}
-      <header className="h-14 border-b border-zinc-800 bg-zinc-900/90 backdrop-blur flex items-center justify-between px-4 shrink-0 sticky top-0 z-50 shadow-sm">
-        <div className="flex items-center gap-3">
+      <header className="h-16 lg:h-14 border-b border-zinc-800 bg-zinc-900/90 backdrop-blur flex items-center justify-between px-4 shrink-0 sticky top-0 z-50 shadow-sm overflow-x-auto overflow-y-hidden scrollbar-hide">
+        <div className="flex items-center gap-3 shrink-0">
           <div className="h-8 w-8 bg-yellow-500 rounded-lg flex items-center justify-center text-black font-bold shadow-[0_0_15px_rgba(234,179,8,0.4)]">
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2l-4 4-4-4"/><path d="M8.5 2C7.12 2 6 3.12 6 4.5V9h12V4.5C18 3.12 16.88 2 15.5 2"/></svg>
           </div>
@@ -311,7 +306,53 @@ const App = () => {
           </div>
         </div>
         
-        <div className="flex items-center gap-3">
+        {/* DESKTOP INTEGRATED CONTROLS (Moved from Sidebar) */}
+        <div className="hidden lg:flex items-center justify-center flex-1 mx-4 gap-4 sm:gap-6 shrink-0">
+            {/* Barbell Mass */}
+            <div className="flex items-center gap-2">
+                <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest">Barbell Weight</span>
+                <div className="flex items-center bg-zinc-800 rounded px-2 py-1">
+                    <input 
+                        type="number"
+                        min="20"
+                        max="260"
+                        value={barbellMass}
+                        onChange={(e) => setBarbellMass(parseInt(e.target.value) || 0)}
+                        onFocus={(e) => e.target.select()}
+                        className="bg-transparent text-white text-xs font-mono font-bold w-14 outline-none text-right"
+                    />
+                    <span className="text-[9px] text-zinc-400 font-bold ml-1">kg</span>
+                </div>
+            </div>
+
+            {/* User Height */}
+            <div className="flex items-center gap-2">
+                <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest">Height</span>
+                <div className="flex items-center bg-zinc-800 rounded px-2 py-1">
+                    <input 
+                        type="number"
+                        min="100"
+                        max="250"
+                        placeholder="Auto"
+                        value={userHeightCm}
+                        onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
+                        onFocus={(e) => e.target.select()}
+                        className="bg-transparent text-white text-xs font-mono font-bold w-16 outline-none text-right placeholder:text-zinc-600"
+                    />
+                    <span className="text-[9px] text-zinc-400 font-bold ml-1">cm</span>
+                </div>
+            </div>
+
+            {/* System Status Indicators */}
+            <div className="flex items-center pl-4 border-l border-zinc-800">
+                <div className="flex items-center gap-1.5" title="Computer Vision Core">
+                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
+                    <span className="text-[9px] text-zinc-400 font-semibold tracking-wide">Vision</span>
+                </div>
+            </div>
+        </div>
+
+        <div className="flex items-center gap-3 shrink-0">
            {/* Status Indicator */}
           <div className={`hidden sm:flex items-center gap-2 px-3 py-1 bg-zinc-800 rounded-full border border-zinc-700`}>
              <div className={`w-1.5 h-1.5 rounded-full ${isAnalyzingVideo ? 'bg-yellow-500 animate-bounce' : 'bg-emerald-500 animate-pulse'}`}></div>
@@ -333,74 +374,6 @@ const App = () => {
       {/* Replaced fixed Grid with Flex to support drag-resizing */}
       <div className="flex-1 flex flex-col lg:flex-row bg-black overflow-hidden relative min-h-0 min-w-0">
         
-        {/* DESKTOP SIDEBAR (Left) */}
-        <aside 
-            className="hidden lg:flex bg-zinc-900 p-5 flex-col gap-6 border-r border-zinc-800 overflow-y-auto shrink-0"
-            style={{ width: layout.leftWidth }}
-        >
-           <div className="space-y-4">
-             <h3 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
-              Parameters
-            </h3>
-            <div className="bg-zinc-800/50 p-4 rounded-xl border border-zinc-700/50 space-y-4">
-               <div>
-                 <div className="flex justify-between items-center mb-3">
-                   <span className="text-[10px] text-zinc-400 font-bold">BARBELL MASS</span>
-                   <span className="text-xs font-mono text-yellow-400 font-bold bg-yellow-400/10 px-2 py-0.5 rounded">{barbellMass} kg</span>
-                 </div>
-                 <input 
-                  type="range" 
-                  min="20" 
-                  max="260" 
-                  step="1" 
-                  value={barbellMass}
-                  onChange={(e) => setBarbellMass(parseInt(e.target.value))}
-                  className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-yellow-400"
-                 />
-               </div>
-
-               <div className="border-t border-zinc-700/50 pt-4">
-                 <div className="flex justify-between items-center mb-3">
-                   <span className="text-[10px] text-zinc-400 font-bold">USER HEIGHT <span className="opacity-50 font-normal ml-1">(Optional)</span></span>
-                   <span className="text-xs font-mono text-blue-400 font-bold bg-blue-400/10 px-2 py-0.5 rounded">{userHeightCm ? `${userHeightCm} cm` : 'Auto'}</span>
-                 </div>
-                 <input 
-                    type="number"
-                    min="100"
-                    max="250"
-                    placeholder="Enter height in cm"
-                    value={userHeightCm}
-                    onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
-                    className="w-full bg-zinc-900 border border-zinc-700 text-white text-sm rounded-lg p-2 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 font-mono transition-colors"
-                 />
-                 <p className="text-[9px] text-zinc-500 mt-2 leading-relaxed">
-                   Set for <span className="text-blue-400">Bi-Planar Calibration</span>. Enhances trajectory accuracy.
-                 </p>
-               </div>
-            </div>
-          </div>
-          
-          <div className="mt-auto">
-             <div className="bg-zinc-800/50 p-4 rounded-xl border border-zinc-700/50">
-                <h4 className="text-xs font-bold text-zinc-300 mb-3">System Status</h4>
-                <ul className="space-y-3">
-                    <li className="flex items-center gap-3 text-[10px] text-zinc-400">
-                        <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
-                        <span>Computer Vision Core</span>
-                    </li>
-                    <li className="flex items-center gap-3 text-[10px] text-zinc-400">
-                        <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
-                        <span>Gemini AI Connected</span>
-                    </li>
-                </ul>
-             </div>
-          </div>
-        </aside>
-
-        {/* RESIZER LEFT (Desktop) */}
-        <div className="hidden lg:block h-full z-20">
-            <Resizer orientation="vertical" onResizeStart={(e) => handleResizeStart('left', e)} isResizing={isResizing} />
-        </div>
 
         {/* CENTER: VIEWPORT */}
         <main 
@@ -430,23 +403,32 @@ const App = () => {
 
         {/* MOBILE CONTROLS (Between Video and Tabs) */}
         <div className="lg:hidden px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex flex-col gap-3 shrink-0">
-            <div className="flex items-center gap-4">
-                <div className="flex-1">
-                   <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest block mb-1">Weight: {barbellMass}kg</label>
-                   <input 
-                    type="range" min="20" max="260" step="1" value={barbellMass}
-                    onChange={(e) => setBarbellMass(parseInt(e.target.value))}
-                    className="w-full h-1 bg-zinc-700 rounded-lg appearance-none accent-yellow-400"
-                   />
+            <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Barbell Wgt</span>
+                    <div className="flex items-center bg-zinc-800 rounded px-2 py-1">
+                       <input 
+                          type="number" min="20" max="260"
+                          value={barbellMass}
+                          onChange={(e) => setBarbellMass(parseInt(e.target.value) || 0)}
+                          onFocus={(e) => e.target.select()}
+                          className="w-14 bg-transparent text-white text-xs text-right outline-none font-mono font-bold"
+                       />
+                       <span className="text-[9px] text-zinc-400 font-bold ml-1">kg</span>
+                    </div>
                 </div>
-                <div className="w-24">
-                   <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest block mb-1">Height</label>
-                   <input 
-                      type="number" min="100" max="250" placeholder="cm (opt)"
-                      value={userHeightCm}
-                      onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
-                      className="w-full bg-zinc-800 border-none text-white text-xs rounded p-1.5 font-mono text-center"
-                   />
+                <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Height</span>
+                    <div className="flex items-center bg-zinc-800 rounded px-2 py-1">
+                       <input 
+                          type="number" min="100" max="250" placeholder="Auto"
+                          value={userHeightCm}
+                          onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
+                          onFocus={(e) => e.target.select()}
+                          className="w-16 bg-transparent text-white text-xs text-right outline-none font-mono font-bold placeholder:text-zinc-600"
+                       />
+                       <span className="text-[9px] text-zinc-400 font-bold ml-1">cm</span>
+                    </div>
                 </div>
             </div>
         </div>
