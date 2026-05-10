@@ -41,6 +41,13 @@ type ChartMode = 'kinematics' | 'kinetics' | 'trajectory' | 'power' | 'angles';
 export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbellMass, onCursorMove, onSeekToTime }) => {
   const [mode, setMode] = useState<ChartMode>('kinematics');
   
+  // Intelligent mobile detection combining pointer type and user agent, averting issues from resized desktop windows.
+  const isMobile = useMemo(() => {
+     if (typeof window === 'undefined') return false;
+     return (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) || 
+            /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  }, []);
+
   // Zoom State
   const [zoomDomain, setZoomDomain] = useState<{ min: number, max: number } | null>(null);
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -154,8 +161,8 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       };
   }, []);
 
-  const handleExportCSV = () => {
-    if (!processedData || processedData.length === 0) return;
+  const getExportData = () => {
+    if (!processedData || processedData.length === 0) return null;
 
     // 1. Calculate Session Peaks for Header
     const maxVelocity = Math.max(...processedData.map(d => d.velocity));
@@ -212,18 +219,67 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
     ]);
 
     // 5. Construct CSV String
-    const csvContent = [
+    return [
         ...headerRows.map(e => e.join(',')),
         columns.join(','),
         ...dataRows.map(e => e.join(','))
     ].join('\n');
+  };
 
-    // 6. Trigger Download using Blob (Industrial Robustness)
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const handleExportData = async (format: 'csv' | 'copy') => {
+    const content = getExportData();
+    if (!content) return;
+
+    if (format === 'copy') {
+        try {
+            await navigator.clipboard.writeText(content);
+            alert("Data copied to clipboard successfully!");
+        } catch (err) {
+            console.error('Failed to copy', err);
+            // Fallback for secure contexts or legacy browsers
+            try {
+                const textArea = document.createElement("textarea");
+                textArea.value = content;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                alert("Data copied to clipboard successfully!");
+            } catch (e) {
+                alert("Failed to copy. Please check your browser permissions.");
+            }
+        }
+        return;
+    }
+
+    const mimeType = 'text/csv;charset=utf-8;';
+    const blob = new Blob([content], { type: mimeType });
+    const fileName = `prolift_export_${Date.now()}.csv`;
+
+    if (isMobile && navigator.share) {
+        // Use text/plain to force OS share sheets to handle the content as an attachable file
+        // rather than dropping unrecognized text/csv mime types or just sharing the title.
+        const file = new File([blob], fileName, { type: 'text/plain' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            try {
+                // Not including `title` or `text` prevents share sheets from accidentally pasting text instead of the file
+                await navigator.share({
+                    files: [file]
+                });
+                return;
+            } catch (err) {
+                console.log('Share error or cancelled', err);
+                if (err && (err as Error).name === 'AbortError') {
+                    return; // User cancelled
+                }
+            }
+        }
+    }
+
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `prolift_export_${Date.now()}.csv`);
+    link.setAttribute('download', fileName);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -447,15 +503,33 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
            {/* Separator */}
            <div className="w-px h-3 bg-zinc-700 mx-1"></div>
 
-           {/* CSV EXPORT BUTTON */}
-           <button 
-             onClick={handleExportCSV}
-             title="Export Session Data to CSV"
-             className="p-1 px-2 flex items-center gap-1 bg-green-900/30 text-green-500 hover:bg-green-600 hover:text-white rounded transition-colors group"
-           >
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              <span className="text-[9px] font-bold hidden md:inline group-hover:inline">CSV</span>
-           </button>
+           {/* EXPORT OPTIONS */}
+           <div className="flex gap-1" id="export-options-group">
+               {/* CSV Export/Share */}
+               <button 
+                 onClick={() => handleExportData('csv')}
+                 title="Export / Share as CSV"
+                 className="px-2 py-1 flex items-center gap-1 bg-green-900/30 text-green-500 hover:bg-green-600 hover:text-white rounded transition-colors group"
+               >
+                  {!isMobile ? (
+                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  ) : (
+                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+                  )}
+                  <span className="text-[9px] font-bold">CSV</span>
+               </button>
+
+               {/* COPY Direct */}
+               <button 
+                 id="btn-export-copy"
+                 onClick={() => handleExportData('copy')}
+                 title="Copy Data to Clipboard"
+                 className="px-2 py-1 flex items-center gap-1 bg-blue-900/30 text-blue-400 hover:bg-blue-600 hover:text-white rounded transition-colors group"
+               >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                  <span className="text-[9px] font-bold">COPY</span>
+               </button>
+           </div>
          </div>
       </div>
       
