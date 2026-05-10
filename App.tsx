@@ -309,9 +309,12 @@ const App = () => {
         {/* DESKTOP INTEGRATED CONTROLS (Moved from Sidebar) */}
         <div className="hidden lg:flex items-center justify-center flex-1 mx-4 gap-4 sm:gap-6 shrink-0">
             {/* Barbell Mass */}
-            <div className="flex items-center gap-2">
-                <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest">Barbell Weight</span>
-                <div className="flex items-center bg-zinc-800 rounded px-2 py-1">
+            <div className="flex items-center gap-2 bg-zinc-950/50 border border-zinc-800 hover:border-zinc-700 focus-within:border-yellow-500/50 focus-within:ring-1 focus-within:ring-yellow-500/20 rounded-md px-2.5 py-1.5 transition-all">
+                <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest flex items-center gap-1.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-600"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                    Barbell Weight
+                </span>
+                <div className="flex items-baseline ml-2">
                     <input 
                         type="number"
                         min="20"
@@ -319,16 +322,19 @@ const App = () => {
                         value={barbellMass}
                         onChange={(e) => setBarbellMass(parseInt(e.target.value) || 0)}
                         onFocus={(e) => e.target.select()}
-                        className="bg-transparent text-white text-xs font-mono font-bold w-14 outline-none text-right"
+                        className="bg-zinc-900 text-yellow-500 text-sm font-mono font-bold w-16 outline-none text-center placeholder:text-zinc-700 border border-zinc-700 hover:border-yellow-500 focus:border-yellow-500 hover:bg-zinc-800 focus:bg-zinc-800 cursor-text transition-all px-2 py-1 rounded shadow-inner"
                     />
-                    <span className="text-[9px] text-zinc-400 font-bold ml-1">kg</span>
+                    <span className="text-[9px] text-zinc-500 font-bold ml-1.5">kg</span>
                 </div>
             </div>
 
             {/* User Height */}
-            <div className="flex items-center gap-2">
-                <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest">Height</span>
-                <div className="flex items-center bg-zinc-800 rounded px-2 py-1">
+            <div className="flex items-center gap-2 bg-zinc-950/50 border border-zinc-800 hover:border-zinc-700 focus-within:border-blue-500/50 focus-within:ring-1 focus-within:ring-blue-500/20 rounded-md px-2.5 py-1.5 transition-all">
+                <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest flex items-center gap-1.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-600"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M12 22V2"/><path d="M8 6h8"/><path d="M8 12h8"/><path d="M8 18h8"/></svg>
+                    Height
+                </span>
+                <div className="flex items-baseline ml-2">
                     <input 
                         type="number"
                         min="100"
@@ -337,9 +343,9 @@ const App = () => {
                         value={userHeightCm}
                         onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
                         onFocus={(e) => e.target.select()}
-                        className="bg-transparent text-white text-xs font-mono font-bold w-16 outline-none text-right placeholder:text-zinc-600"
+                        className="bg-zinc-900 text-blue-400 text-sm font-mono font-bold w-16 outline-none text-center placeholder:text-zinc-700 border border-zinc-700 hover:border-blue-400 focus:border-blue-400 hover:bg-zinc-800 focus:bg-zinc-800 cursor-text transition-all px-2 py-1 rounded shadow-inner"
                     />
-                    <span className="text-[9px] text-zinc-400 font-bold ml-1">cm</span>
+                    <span className="text-[9px] text-zinc-500 font-bold ml-1.5">cm</span>
                 </div>
             </div>
 
@@ -406,28 +412,28 @@ const App = () => {
             <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-2">
                     <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Barbell Wgt</span>
-                    <div className="flex items-center bg-zinc-800 rounded px-2 py-1">
+                    <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded px-2 py-1 shadow-inner">
                        <input 
                           type="number" min="20" max="260"
                           value={barbellMass}
                           onChange={(e) => setBarbellMass(parseInt(e.target.value) || 0)}
                           onFocus={(e) => e.target.select()}
-                          className="w-14 bg-transparent text-white text-xs text-right outline-none font-mono font-bold"
+                          className="w-16 bg-transparent text-yellow-500 text-xs text-center outline-none font-mono font-bold"
                        />
-                       <span className="text-[9px] text-zinc-400 font-bold ml-1">kg</span>
+                       <span className="text-[9px] text-zinc-500 font-bold ml-1">kg</span>
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
                     <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Height</span>
-                    <div className="flex items-center bg-zinc-800 rounded px-2 py-1">
+                    <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded px-2 py-1 shadow-inner">
                        <input 
                           type="number" min="100" max="250" placeholder="Auto"
                           value={userHeightCm}
                           onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
                           onFocus={(e) => e.target.select()}
-                          className="w-16 bg-transparent text-white text-xs text-right outline-none font-mono font-bold placeholder:text-zinc-600"
+                          className="w-16 bg-transparent text-blue-400 text-xs text-center outline-none font-mono font-bold placeholder:text-zinc-600"
                        />
-                       <span className="text-[9px] text-zinc-400 font-bold ml-1">cm</span>
+                       <span className="text-[9px] text-zinc-500 font-bold ml-1">cm</span>
                     </div>
                 </div>
             </div>
