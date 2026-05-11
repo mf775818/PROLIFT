@@ -9,7 +9,7 @@ import { LiftMetrics } from './types';
 const Resizer = ({ orientation, onResizeStart, isResizing }: { orientation: 'vertical' | 'horizontal', onResizeStart: (e: React.MouseEvent | React.TouchEvent) => void, isResizing: boolean }) => {
     return (
         <div 
-            className={`group relative z-50 flex items-center justify-center transition-colors 
+            className={`group relative z-50 flex items-center justify-center transition-colors touch-none
                 ${orientation === 'vertical' 
                     ? 'w-3 hover:w-3 cursor-col-resize -ml-1.5 -mr-1.5 h-full' 
                     : 'h-6 w-full cursor-row-resize -mt-3 -mb-3'
@@ -262,6 +262,9 @@ const App = () => {
       const root = document.documentElement;
 
       const handleMove = (moveEvent: MouseEvent | TouchEvent) => {
+          if (moveEvent.cancelable) {
+              moveEvent.preventDefault();
+          }
           // Use requestAnimationFrame to throttle and ensure DOM writes happen once per frame
           requestAnimationFrame(() => {
               const currentX = 'touches' in moveEvent ? moveEvent.touches[0].clientX : (moveEvent as MouseEvent).clientX;
@@ -396,12 +399,11 @@ const App = () => {
 
       {/* Main Workspace - UX Optimized Resizable Layout */}
       {/* Replaced fixed Grid with Flex to support drag-resizing */}
-      <div className="flex-1 flex flex-col lg:flex-row bg-black overflow-hidden relative min-h-0 min-w-0">
+      <div className="flex-1 flex flex-col lg:flex-row bg-black overflow-y-auto overscroll-contain relative min-h-0 min-w-0">
         
-
         {/* CENTER: VIEWPORT */}
         <main 
-            className={`relative flex-none lg:flex-1 w-full bg-black flex items-center justify-center overflow-hidden border-b lg:border-b-0 border-zinc-800 scrollbar-hide min-w-0 min-h-0 ${isResizing ? 'pointer-events-none' : ''}`}
+            className={`relative flex-none lg:flex-1 w-full bg-black flex items-center justify-center overflow-hidden border-b lg:border-b-0 border-zinc-800 scrollbar-hide min-w-0 min-h-0 touch-none ${isResizing ? 'pointer-events-none' : ''}`}
             style={{ 
                 // Mobile: Dynamic Height | Desktop: Auto Fill
                 height: window.innerWidth < 1024 ? `var(--mobile-video-height, ${layout.mobileVideoHeightPct}dvh)` : 'auto' 
@@ -486,7 +488,7 @@ const App = () => {
           
           {/* Chart Section */}
           <div 
-            className={`flex-col min-h-[200px] lg:min-h-0 border-b border-zinc-800 ${activeTab === 'chart' ? 'flex flex-1 lg:flex-none' : 'hidden lg:flex lg:flex-none'} ${isResizing ? 'pointer-events-none' : ''}`}
+            className={`flex-col min-h-[200px] lg:min-h-0 border-b border-zinc-800 overscroll-contain ${activeTab === 'chart' ? 'flex flex-1 lg:flex-none' : 'hidden lg:flex lg:flex-none'} ${isResizing ? 'pointer-events-none' : ''}`}
             style={window.innerWidth < 1024 ? {} : { height: `var(--chart-height, ${layout.chartHeightPct}%)` }}
           >
              <div className="p-3 bg-zinc-800/30 border-b border-zinc-800 flex justify-between items-center">
@@ -518,7 +520,7 @@ const App = () => {
           </div>
 
           {/* Stats Section */}
-          <div className={`flex-col bg-zinc-900 overflow-y-auto ${activeTab === 'stats' ? 'flex flex-1' : 'hidden lg:flex lg:flex-1'}`}>
+          <div className={`flex-col bg-zinc-900 overflow-y-auto overscroll-contain ${activeTab === 'stats' ? 'flex flex-1' : 'hidden lg:flex lg:flex-1'}`}>
             <div className="px-4 py-3 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 sticky top-0 z-10">
                 <h3 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
                     Performance Metrics
