@@ -340,8 +340,11 @@ const App = () => {
                         type="number"
                         min="20"
                         max="260"
+                        inputMode="decimal"
+                        pattern="[0-9]*"
                         value={barbellMass}
-                        onChange={(e) => setBarbellMass(parseInt(e.target.value) || 0)}
+                        onChange={(e) => setBarbellMass(Math.max(0, parseInt(e.target.value) || 0))}
+                        onKeyDown={(e) => { if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault(); }}
                         onFocus={(e) => e.target.select()}
                         className="bg-zinc-900 text-yellow-500 text-sm font-mono font-bold w-16 outline-none text-center placeholder:text-zinc-700 border border-zinc-700 hover:border-yellow-500 focus:border-yellow-500 hover:bg-zinc-800 focus:bg-zinc-800 cursor-text transition-all px-2 py-1 rounded shadow-inner"
                     />
@@ -361,8 +364,11 @@ const App = () => {
                         min="100"
                         max="250"
                         placeholder="Auto"
+                        inputMode="decimal"
+                        pattern="[0-9]*"
                         value={userHeightCm}
-                        onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
+                        onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value)))}
+                        onKeyDown={(e) => { if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault(); }}
                         onFocus={(e) => e.target.select()}
                         className="bg-zinc-900 text-blue-400 text-sm font-mono font-bold w-16 outline-none text-center placeholder:text-zinc-700 border border-zinc-700 hover:border-blue-400 focus:border-blue-400 hover:bg-zinc-800 focus:bg-zinc-800 cursor-text transition-all px-2 py-1 rounded shadow-inner"
                     />
@@ -435,8 +441,10 @@ const App = () => {
                     <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded px-2 py-1 shadow-inner">
                        <input 
                           type="number" min="20" max="260"
+                          inputMode="decimal" pattern="[0-9]*"
                           value={barbellMass}
-                          onChange={(e) => setBarbellMass(parseInt(e.target.value) || 0)}
+                          onChange={(e) => setBarbellMass(Math.max(0, parseInt(e.target.value) || 0))}
+                          onKeyDown={(e) => { if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault(); }}
                           onFocus={(e) => e.target.select()}
                           className="w-16 bg-transparent text-yellow-500 text-xs text-center outline-none font-mono font-bold"
                        />
@@ -448,8 +456,10 @@ const App = () => {
                     <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded px-2 py-1 shadow-inner">
                        <input 
                           type="number" min="100" max="250" placeholder="Auto"
+                          inputMode="decimal" pattern="[0-9]*"
                           value={userHeightCm}
-                          onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
+                          onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value)))}
+                          onKeyDown={(e) => { if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault(); }}
                           onFocus={(e) => e.target.select()}
                           className="w-16 bg-transparent text-blue-400 text-xs text-center outline-none font-mono font-bold placeholder:text-zinc-600"
                        />
