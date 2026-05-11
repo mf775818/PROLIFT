@@ -507,7 +507,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const pathCanvasRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const processingVideoRef = useRef<HTMLVideoElement>(document.createElement('video'));
-  const worldPerspectiveRef = useRef({ bodyAngle: 0, feetSlope: 0, isReady: false });
+  const worldPerspectiveRef = useRef({ bodyAngle: 0, gridYaw: 0, feetSlope: 0, isReady: false });
   
   const lastRenderedIndexRef = useRef<number>(-1);
 
@@ -1313,7 +1313,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             // Roll 可以由極線的斜率推導出 (其中 a=-dy/L, b=dx/L) -> slope = a 近似值
             let dx = inline.b; let dy = -inline.a;
             if (dx < 0) { dx = -dx; dy = -dy; } // Keep x positive for consistent slope
-            const roll = (dx > 0) ? (dy / dx) : 0;
+            const roll = (Math.abs(dx) > 1e-5) ? Math.atan(dy / dx) : 0;
             
             sumRoll += roll * inline.weight;
             sumWeight += inline.weight;
@@ -1334,8 +1334,22 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     
     feetSlope = Math.max(-0.25, Math.min(0.25, feetSlope)); // 極限邊界約束
     
+    // --- 工業級鎖向與降噪 (Industrial Orientation Locking) ---
+    // 舉重台通常呈正方形，且相機通常為正拍(0/180)、側拍(90/-90)或是斜拍(45)。
+    // 將 bodyAngle 映射到 [ -PI/4, PI/4 ] 之間，代表「相對於主要格線的偏角」
+    let gridYaw = bodyAngle % (Math.PI / 2);
+    if (gridYaw > Math.PI / 4) gridYaw -= Math.PI / 2;
+    if (gridYaw < -Math.PI / 4) gridYaw += Math.PI / 2;
+    
+    // 大角度吸附 (Lock/Snap to grid axes) - 20 degrees threshold for robust 1-point perspective
+    // 在容差範圍內，強制鎖定為一維透視 (純正面、背面、側面)
+    const snapThreshold = 20 * (Math.PI / 180);
+    if (Math.abs(gridYaw) < snapThreshold) {
+         gridYaw = 0; 
+    }
+    
     // Save to the ref wrapper
-    worldPerspectiveRef.current = { bodyAngle, feetSlope, isReady: true };
+    worldPerspectiveRef.current = { bodyAngle, gridYaw, feetSlope, isReady: true };
 
 
     // 我們將 mm 轉回 Meters，以確保後方物理引擎的公式無縫接軌 (Power, Velocity 單位 = m/s)
@@ -1594,10 +1608,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       let yaw = 0;
       let roll = 0;
       if (worldPerspectiveRef.current.isReady) {
-          // Use the robust PCA-median global calculated angles
-          yaw = -worldPerspectiveRef.current.bodyAngle * 0.6;
-          yaw = Math.max(-0.8, Math.min(0.8, yaw));
-          roll = worldPerspectiveRef.current.feetSlope * 0.5; // Slightly dampen for extreme rolling
+          // Use the exact calculated physical grid yaw to maintain strict parallel/perpendicular relation
+          // No arbitrary scaling or damping to ensure true 1-point perspective mathematically aligns.
+          yaw = -worldPerspectiveRef.current.gridYaw;
+          roll = worldPerspectiveRef.current.feetSlope;
       } else {
           // Fallback if not ready
           if (firstFrameLandmarks && firstFrameLandmarks.length > 28) {
@@ -1607,15 +1621,22 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                  const dx = rHip.x - lHip.x; 
                  const dz = rHip.z - lHip.z; 
                  let bodyAngle = Math.atan2(dz, -dx); 
-                 yaw = -bodyAngle * 0.6;
-                 yaw = Math.max(-0.8, Math.min(0.8, yaw));
+                 
+                 let fallbackGridYaw = bodyAngle % (Math.PI / 2);
+                 if (fallbackGridYaw > Math.PI / 4) fallbackGridYaw -= Math.PI / 2;
+                 if (fallbackGridYaw < -Math.PI / 4) fallbackGridYaw += Math.PI / 2;
+                 if (Math.abs(fallbackGridYaw) < 20 * (Math.PI / 180)) {
+                      fallbackGridYaw = 0; // Strict 1-point perspective snapping
+                 }
+                 
+                 yaw = -fallbackGridYaw;
               }
               const lFoot = firstFrameLandmarks[27];
               const rFoot = firstFrameLandmarks[28];
               if (lFoot && rFoot) {
                   const dx = lFoot.x - rFoot.x;
                   const dy = lFoot.y - rFoot.y;
-                  if (Math.abs(dx) > 0.02) roll = (dy/dx) * 0.5;
+                  if (Math.abs(dx) > 0.02) roll = Math.atan(dy/dx);
               }
           }
       }
