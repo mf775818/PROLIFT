@@ -460,56 +460,59 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
 
   return (
     <div className="w-full h-full flex flex-col overflow-hidden relative">
-      <div className="flex justify-between items-center mb-2 px-2 shrink-0">
-         <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-2 px-2 shrink-0 gap-2 w-full overflow-hidden">
+         <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest shrink-0 hidden sm:block">
             {mode === 'kinematics' && 'Velocity & Height'}
             {mode === 'kinetics' && 'Force & Acceleration'}
             {mode === 'trajectory' && 'Bar Path Heatmap'}
             {mode === 'power' && 'Power Output'}
             {mode === 'angles' && 'Joint Angles (Hip/Knee/Ankle)'}
          </h3>
-         <div className="flex bg-zinc-900 rounded p-1 border border-zinc-700 gap-1 z-10 items-center">
+         <div 
+           className="flex bg-zinc-900 rounded p-1 border border-zinc-700 gap-1 z-10 items-center overflow-x-auto max-w-full [&::-webkit-scrollbar]:hidden" 
+           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+         >
            <button 
              onClick={() => { setMode('kinematics'); setZoomDomain(null); }}
-             className={`px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'kinematics' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+             className={`shrink-0 px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'kinematics' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
            >
                KINEMATICS
            </button>
            <button 
              onClick={() => { setMode('kinetics'); setZoomDomain(null); }}
-             className={`px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'kinetics' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+             className={`shrink-0 px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'kinetics' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
            >
                KINETICS
            </button>
            <button 
              onClick={() => { setMode('power'); setZoomDomain(null); }}
-             className={`px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'power' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+             className={`shrink-0 px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'power' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
            >
                POWER
            </button>
            <button 
              onClick={() => { setMode('angles'); setZoomDomain(null); }}
-             className={`px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'angles' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+             className={`shrink-0 px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'angles' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
            >
                ANGLES
            </button>
            <button 
              onClick={() => { setMode('trajectory'); setZoomDomain(null); }}
-             className={`px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'trajectory' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+             className={`shrink-0 px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'trajectory' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
            >
                BAR PATH
            </button>
            
            {/* Separator */}
-           <div className="w-px h-3 bg-zinc-700 mx-1"></div>
+           <div className="shrink-0 w-px h-3 bg-zinc-700 mx-1"></div>
 
            {/* EXPORT OPTIONS */}
-           <div className="flex gap-1" id="export-options-group">
+           <div className="flex gap-1 shrink-0" id="export-options-group">
                {/* CSV Export/Share */}
                <button 
                  onClick={() => handleExportData('csv')}
                  title="Export / Share as CSV"
-                 className="px-2 py-1 flex items-center gap-1 bg-green-900/30 text-green-500 hover:bg-green-600 hover:text-white rounded transition-colors group"
+                 className="shrink-0 px-2 py-1 flex items-center gap-1 bg-green-900/30 text-green-500 hover:bg-green-600 hover:text-white rounded transition-colors group"
                >
                   {!isMobile ? (
                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -524,7 +527,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  id="btn-export-copy"
                  onClick={() => handleExportData('copy')}
                  title="Copy Data to Clipboard"
-                 className="px-2 py-1 flex items-center gap-1 bg-blue-900/30 text-blue-400 hover:bg-blue-600 hover:text-white rounded transition-colors group"
+                 className="shrink-0 px-2 py-1 flex items-center gap-1 bg-blue-900/30 text-blue-400 hover:bg-blue-600 hover:text-white rounded transition-colors group"
                >
                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                   <span className="text-[9px] font-bold">COPY</span>
