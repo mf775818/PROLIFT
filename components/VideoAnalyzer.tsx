@@ -1452,6 +1452,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       // 垂直參考線 (X軸原點)
       overlayCtx.beginPath(); overlayCtx.moveTo(zx, 0); overlayCtx.lineTo(zx, h); overlayCtx.stroke();
       
+      // Reset line dash to prevent subsequent drawings (like the skeleton in the next frame) from being dashed
+      overlayCtx.setLineDash([]);
       
       // 起點標示 (原點)
       overlayCtx.beginPath(); overlayCtx.arc(zx, zy, 5, 0, 2*Math.PI); overlayCtx.fillStyle = '#22c55e'; overlayCtx.fill();
