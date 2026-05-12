@@ -69,21 +69,9 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
 
     const powers = data.map(d => d.power);
     
-    // We use dynamic slack based on the initial noise.
-    const initialPowers = powers.slice(0, 15);
-    const mean = initialPowers.reduce((a, b) => a + b, 0) / initialPowers.length;
-    const variance = initialPowers.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / initialPowers.length;
-    const stdDev = Math.sqrt(variance) || 1; // Fallback to 1
-
-    // Robust heuristic thresholds
-    const dynamicSlack = Math.max(10, stdDev);
-    const dynamicThreshold = Math.max(50, stdDev * 4);
-
-    const detectedOnsetIndex = OnsetDetectorHPC.detectBatchOnset(powers, { 
-        slack: dynamicSlack, 
-        threshold: dynamicThreshold, 
-        warmupFrames: 10 
-    });
+    // 使用工業級建議參數：
+    // - sensitivity: 5 (5倍 Sigma 觸發門檻，極其穩健)
+    const detectedOnsetIndex = OnsetDetectorHPC.detectBatchOnset(powers, 5);
 
     return {
         onsetIndex: detectedOnsetIndex,
@@ -93,8 +81,9 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
     };
   }, [data]);
 
-  // Derived Physics Data
+  // Derived Physics Data - SHOW ALL DATA BUT CALCULATE RELATIVE TO ONSET
   const processedData = useMemo<ProcessedLiftMetrics[]>(() => {
+    // ⚠️ 這裡不再進行 .slice(onsetIndex)，確保圖表呈現完整時間段與功率波形
     return data.map((d, i) => {
       let acceleration = 0;
       let force = 0;
@@ -109,17 +98,16 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
 
       return {
         ...d,
-        // Make time relative to the start! But maybe the timeVal is expected to be absolute?
-        // Usually, time axis relative to 0 is preferred or just leave the absolute time and use the reference line.
-        // The user asked "其偏移量都以該點為原點(0,0)", XDev and YHgt
-        timeVal: parseFloat(d.time), 
-        xDev: (d.x - startX) * 200, // Normalized X shifted to start
-        yHgt: d.height - startY,    // Normalized or meters Y shifted to start
+        // 所有數據都相對於起始點進行偏移，但保留全量點位
+        // 這樣起點前會顯示負數時間，起點後顯示正數，符合工業級回溯分析需求
+        timeVal: parseFloat(d.time) - startTimeVal, 
+        xDev: (d.x - startX) * 200, // cm
+        yHgt: d.height - startY,    // m
         acceleration: acceleration,
         force: Math.max(0, force)
       };
     });
-  }, [data, startX, startY, barbellMass]);
+  }, [data, startX, startY, startTimeVal, barbellMass]);
 
   // "Smart Dynamic" Domain Calculation
   const scatterXDomain = useMemo(() => {
@@ -471,18 +459,20 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       if (onSeekToTime && nextState) {
           // 優先度 1：精準點擊在資料線上
           if (nextState.activePayload && nextState.activePayload.length > 0) {
-              onSeekToTime(nextState.activePayload[0].payload.timeVal);
+              // 加上 startTimeVal 轉回絕對時間
+              onSeekToTime(nextState.activePayload[0].payload.timeVal + startTimeVal);
           } 
           // 優先度 2：點擊在圖表空白處 (軌跡圖除外，因其 X 軸不是時間)
           else if (mode !== 'trajectory' && nextState.activeLabel !== undefined) {
-              onSeekToTime(Number(nextState.activeLabel));
+              // 加上 startTimeVal 轉回絕對時間
+              onSeekToTime(Number(nextState.activeLabel) + startTimeVal);
           }
       }
   };
   
   const handleDoubleClick = (e: React.MouseEvent) => {
       if (onSeekToTime && hoveredMetricRef.current) {
-           onSeekToTime(hoveredMetricRef.current.timeVal);
+           onSeekToTime(hoveredMetricRef.current.timeVal + startTimeVal);
       }
   };
   
@@ -517,10 +507,12 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
   
   const currentPoint = useMemo(() => {
       if (!processedData || processedData.length === 0) return null;
+      // 使用絕對時間進行匹配
+      const relativeCurrent = currentTime - startTimeVal;
       return processedData.reduce((prev, curr) => 
-        Math.abs(curr.timeVal - currentTime) < Math.abs(prev.timeVal - currentTime) ? curr : prev
+        Math.abs(curr.timeVal - relativeCurrent) < Math.abs(prev.timeVal - relativeCurrent) ? curr : prev
       );
-  }, [processedData, currentTime]);
+  }, [processedData, currentTime, startTimeVal]);
 
   if (!data || data.length === 0) {
     return (
@@ -650,8 +642,8 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 labelStyle={{ color: '#a1a1aa', fontSize: '10px' }}
                 cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
-              <ReferenceLine x={startTimeVal} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
-              <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
+              <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
+              <ReferenceLine x={currentTime - startTimeVal} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                   <>
                     <ReferenceDot yAxisId="left" x={currentPoint.timeVal} y={currentPoint.velocity} r={4} fill="#facc15" stroke="white" strokeWidth={2} />
@@ -678,8 +670,8 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 itemStyle={{ fontSize: '11px' }} 
                 cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
-              <ReferenceLine x={startTimeVal} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5 }} />
-              <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
+              <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5 }} />
+              <ReferenceLine x={currentTime - startTimeVal} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                   <>
                     <ReferenceDot yAxisId="left" x={currentPoint.timeVal} y={currentPoint.force} r={4} fill="#ef4444" stroke="white" strokeWidth={2} />
@@ -699,8 +691,8 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  itemStyle={{ fontSize: '11px' }} 
                  cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
-              <ReferenceLine x={startTimeVal} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
-              <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
+              <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
+              <ReferenceLine x={currentTime - startTimeVal} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                  <ReferenceDot x={currentPoint.timeVal} y={currentPoint.power} r={4} fill="#ef4444" stroke="white" strokeWidth={2} />
               )}
@@ -717,8 +709,8 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  itemStyle={{ fontSize: '11px' }} 
                  cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
-              <ReferenceLine x={startTimeVal} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
-              <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
+              <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
+              <ReferenceLine x={currentTime - startTimeVal} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                 <>
                   <ReferenceDot x={currentPoint.timeVal} y={currentPoint.hipAngle} r={3} fill="#3b82f6" stroke="none" />

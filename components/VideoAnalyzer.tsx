@@ -1265,24 +1265,16 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
     if (metrics.length > 5) {
         const powers = metrics.map(m => m.power);
-        const initialPowers = powers.slice(0, 15);
-        const mean = initialPowers.reduce((a, b) => a + b, 0) / initialPowers.length;
-        const variance = initialPowers.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / initialPowers.length;
-        const stdDev = Math.sqrt(variance) || 1;
-        const dynamicSlack = Math.max(10, stdDev);
-        const dynamicThreshold = Math.max(50, stdDev * 4);
-
-        const detectedOnsetIndex = OnsetDetectorHPC.detectBatchOnset(powers, { 
-            slack: dynamicSlack, 
-            threshold: dynamicThreshold, 
-            warmupFrames: 10 
-        });
+        
+        // 使用與 LiftChart 一致的工業級自適應偵測
+        const detectedOnsetIndex = OnsetDetectorHPC.detectBatchOnset(powers, 5);
+        
         const zeroIdx = Math.max(0, detectedOnsetIndex);
         startXRef.current = metrics[zeroIdx].x;
-        startYRef.current = metrics[zeroIdx].y || smoothedY[0];
+        startYRef.current = metrics[zeroIdx].y || (smoothedY && smoothedY[0]) || 0;
     } else {
         startXRef.current = metrics[0]?.x || 0;
-        startYRef.current = smoothedY[0] || 0;
+        startYRef.current = (smoothedY && smoothedY[0]) || 0;
     }
 
     const highResMetrics = upsampleData(metrics, 4);
