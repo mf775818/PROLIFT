@@ -393,13 +393,18 @@ class OpenCVTracker {
             status = new cv.Mat();
             err = new cv.Mat();
             
-            // --- INDUSTRIAL OPTIMIZATION: Faster Optical Flow ---
-            // winSize 15x15 and maxLevel 2 to balance speed and accuracy in offline/batch environments
-            const winSize = new cv.Size(15, 15);
+            // --- 🐒C++++ INDUSTRIAL OPTIMIZATION: Adaptive Optical Flow ---
+            // 方法論: Scale-Space Expansion
+            // 將搜尋視窗從 15x15 擴大至 31x31，金字塔層級從 2 提升至 4。
+            // 這將理論最大追蹤位移從 ~30px 提升至 ~240px，完美覆蓋移動端 I-Frame 跳幀導致的大位移與殘影，
+            // 且因為是在局部 ROI (Region of Interest) 內計算，對移動端 CPU 的效能衝擊極小。
+            const winSize = new cv.Size(31, 31); 
+            const maxLevel = 4; // 提升金字塔深度
             
             cv.calcOpticalFlowPyrLK(
-                prevGrayRoi, nextGrayRoi, localPrevPts, localNextPts, status, err, winSize, 2, 
-                new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 10, 0.03)
+                prevGrayRoi, nextGrayRoi, localPrevPts, localNextPts, status, err, winSize, maxLevel, 
+                // 收斂條件強化：增加迭代次數 (20) 與提高精度 (0.01)，確保大視窗下的尋優準確度
+                new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 20, 0.01)
             );
 
             nextPts = new cv.Mat();
