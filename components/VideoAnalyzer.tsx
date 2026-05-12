@@ -6,6 +6,7 @@ import { CalibrationEngineHPC } from '../src/lib/hpc/CalibrationEngineHPC';
 import { DepthCalibratorHPC } from '../src/lib/hpc/DepthCalibratorHPC';
 import { PhysicsEngineHPC } from '../src/lib/hpc/PhysicsEngineHPC';
 import { KalmanSmoother1D } from '../src/lib/hpc/KalmanSmoother';
+import { OnsetDetectorHPC } from '../src/lib/hpc/OnsetDetectorHPC';
 
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
@@ -1263,18 +1264,26 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     }
 
     if (metrics.length > 5) {
-        let maxP = -1; let pIdx = 0;
-        metrics.forEach((m, i) => { if (m.power > maxP) { maxP = m.power; pIdx = i; } });
-        let zeroIdx = 0;
-        const floor = Math.max(15, maxP * 0.005);
-        for (let i = pIdx; i >= 0; i--) {
-            if (metrics[i].power <= floor) { zeroIdx = i; break; }
-        }
+        const powers = metrics.map(m => m.power);
+        const initialPowers = powers.slice(0, 15);
+        const mean = initialPowers.reduce((a, b) => a + b, 0) / initialPowers.length;
+        const variance = initialPowers.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / initialPowers.length;
+        const stdDev = Math.sqrt(variance) || 1;
+        const dynamicSlack = Math.max(10, stdDev);
+        const dynamicThreshold = Math.max(50, stdDev * 4);
+
+        const detectedOnsetIndex = OnsetDetectorHPC.detectBatchOnset(powers, { 
+            slack: dynamicSlack, 
+            threshold: dynamicThreshold, 
+            warmupFrames: 10 
+        });
+        const zeroIdx = Math.max(0, detectedOnsetIndex);
         startXRef.current = metrics[zeroIdx].x;
+        startYRef.current = metrics[zeroIdx].y || smoothedY[0];
     } else {
         startXRef.current = metrics[0]?.x || 0;
+        startYRef.current = smoothedY[0] || 0;
     }
-    startYRef.current = smoothedY[0]; 
 
     const highResMetrics = upsampleData(metrics, 4);
     // Advanced Compression: RDP simplifies the path while keeping the shape perfectly
@@ -1434,8 +1443,19 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       }
 
       const zx = startXRef.current * w; const zy = startYRef.current * h;
-      overlayCtx.beginPath(); overlayCtx.moveTo(zx, 0); overlayCtx.lineTo(zx, h); overlayCtx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; overlayCtx.setLineDash([4, 4]); overlayCtx.lineWidth = 2; overlayCtx.stroke(); overlayCtx.setLineDash([]);
-      overlayCtx.beginPath(); overlayCtx.arc(zx, zy, 4, 0, 2*Math.PI); overlayCtx.fillStyle = 'white'; overlayCtx.fill();
+      
+      // 畫出對應 LiftChart 中綠色虛線 (0,0 原點) 
+      overlayCtx.setLineDash([4, 4]);
+      overlayCtx.strokeStyle = 'rgba(34, 197, 94, 0.6)'; // #22c55e (Green)
+      overlayCtx.lineWidth = 2;
+      
+      // 垂直參考線 (X軸原點)
+      overlayCtx.beginPath(); overlayCtx.moveTo(zx, 0); overlayCtx.lineTo(zx, h); overlayCtx.stroke();
+      
+      
+      // 起點標示 (原點)
+      overlayCtx.beginPath(); overlayCtx.arc(zx, zy, 5, 0, 2*Math.PI); overlayCtx.fillStyle = '#22c55e'; overlayCtx.fill();
+    
 
       // --- ADVANCED COMPRESSION RENDERING (LTS: LAYERED TIME-STATE ZERO-ALLOCATION) ---
       const currentT = typeof metric.time === 'string' ? parseFloat(metric.time) : metric.time;

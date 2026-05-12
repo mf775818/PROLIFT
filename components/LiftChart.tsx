@@ -1,5 +1,6 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { OnsetDetectorHPC } from '../src/lib/hpc/OnsetDetectorHPC';
 import {
   LineChart,
   Line,
@@ -55,35 +56,41 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
 
   const maxVel = useMemo(() => Math.max(...data.map(d => d.velocity), 0.1), [data]);
 
-  // --- INDUSTRIAL GRADE ZERO LINE DETECTION (RETROGRADE POWER-ZERO CONVERGENCE) ---
-  const startX = useMemo(() => {
-    if (data.length < 5) return data[0]?.x || 0;
+  // --- INDUSTRIAL GRADE ONSET DETECTION (CUSUM & FSM) ---
+  const { onsetIndex, startX, startY, startTimeVal } = useMemo(() => {
+    if (data.length < 5) {
+        return { 
+            onsetIndex: 0, 
+            startX: data[0]?.x || 0, 
+            startY: data[0]?.height || 0, 
+            startTimeVal: parseFloat(data[0]?.time) || 0 
+        };
+    }
 
-    // 1. GLOBAL PEAK IDENTIFICATION
-    let maxPower = -1;
-    let peakIndex = 0;
+    const powers = data.map(d => d.power);
     
-    for (let i = 0; i < data.length; i++) {
-        if (data[i].power > maxPower) {
-            maxPower = data[i].power;
-            peakIndex = i;
-        }
-    }
+    // We use dynamic slack based on the initial noise.
+    const initialPowers = powers.slice(0, 15);
+    const mean = initialPowers.reduce((a, b) => a + b, 0) / initialPowers.length;
+    const variance = initialPowers.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / initialPowers.length;
+    const stdDev = Math.sqrt(variance) || 1; // Fallback to 1
 
-    // Edge Case: If max power is negligible (no lift happened), fallback to start
-    if (maxPower < 10) return data[0].x;
+    // Robust heuristic thresholds
+    const dynamicSlack = Math.max(10, stdDev);
+    const dynamicThreshold = Math.max(50, stdDev * 4);
 
-    // 2. RETROGRADE WALK TO ZERO POWER
-    const POWER_NOISE_FLOOR = Math.max(15, maxPower * 0.005);
-    let zeroIndex = 0;
-    for (let i = peakIndex; i >= 0; i--) {
-        const p = data[i].power;
-        if (p <= POWER_NOISE_FLOOR) {
-            zeroIndex = i;
-            break; 
-        }
-    }
-    return data[zeroIndex].x;
+    const detectedOnsetIndex = OnsetDetectorHPC.detectBatchOnset(powers, { 
+        slack: dynamicSlack, 
+        threshold: dynamicThreshold, 
+        warmupFrames: 10 
+    });
+
+    return {
+        onsetIndex: detectedOnsetIndex,
+        startX: data[detectedOnsetIndex]?.x || 0,
+        startY: data[detectedOnsetIndex]?.height || 0,
+        startTimeVal: parseFloat(data[detectedOnsetIndex]?.time) || 0
+    };
   }, [data]);
 
   // Derived Physics Data
@@ -102,14 +109,17 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
 
       return {
         ...d,
-        timeVal: parseFloat(d.time),
-        xDev: (d.x - startX) * 200, // cm
-        yHgt: d.height,
+        // Make time relative to the start! But maybe the timeVal is expected to be absolute?
+        // Usually, time axis relative to 0 is preferred or just leave the absolute time and use the reference line.
+        // The user asked "其偏移量都以該點為原點(0,0)", XDev and YHgt
+        timeVal: parseFloat(d.time), 
+        xDev: (d.x - startX) * 200, // Normalized X shifted to start
+        yHgt: d.height - startY,    // Normalized or meters Y shifted to start
         acceleration: acceleration,
         force: Math.max(0, force)
       };
     });
-  }, [data, startX, barbellMass]);
+  }, [data, startX, startY, barbellMass]);
 
   // "Smart Dynamic" Domain Calculation
   const scatterXDomain = useMemo(() => {
@@ -640,6 +650,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 labelStyle={{ color: '#a1a1aa', fontSize: '10px' }}
                 cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
+              <ReferenceLine x={startTimeVal} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
               <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                   <>
@@ -667,6 +678,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 itemStyle={{ fontSize: '11px' }} 
                 cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
+              <ReferenceLine x={startTimeVal} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5 }} />
               <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                   <>
@@ -687,6 +699,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  itemStyle={{ fontSize: '11px' }} 
                  cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
+              <ReferenceLine x={startTimeVal} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
               <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                  <ReferenceDot x={currentPoint.timeVal} y={currentPoint.power} r={4} fill="#ef4444" stroke="white" strokeWidth={2} />
@@ -704,6 +717,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  itemStyle={{ fontSize: '11px' }} 
                  cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
+              <ReferenceLine x={startTimeVal} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
               <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                 <>
@@ -752,7 +766,8 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  itemStyle={{ fontSize: '12px', color: '#fff' }}
                />
                
-               <ReferenceLine x={0} stroke="#52525b" strokeWidth={1} />
+               <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideBottomLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5 }} />
+               <ReferenceLine y={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} />
 
                {currentPoint && (
                    <ReferenceDot 
