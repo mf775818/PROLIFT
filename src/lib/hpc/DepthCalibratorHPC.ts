@@ -21,15 +21,11 @@ export class DepthCalibratorHPC {
     public calibrate(
         platePixelDiameter: number, 
         bodyPixelHeight: number,
-        userHeightMm?: number | null,
-        focalLengthPixels: number = 800.0 // 引入相機的針孔投影模型焦距 (預設 800px)
+        userHeightMm?: number | null
     ): void {
         // 1. 永遠存在的錨點：槓鈴片比例尺
         const plateScale = DepthCalibratorHPC.OLYMPIC_PLATE_MM / platePixelDiameter;
         this.calibrationState[0] = plateScale;
-
-        // 幾何補償：利用已知的槓鈴絕對尺寸推導出槓鈴的確切 Z 深度 (Z = f * RealSize / PixelSize)
-        const zBarbell = focalLengthPixels * plateScale;
 
         // 2. 動態判定：雙錨定 vs 單錨定
         if (userHeightMm !== undefined && userHeightMm !== null && userHeightMm > 0) {
@@ -38,21 +34,15 @@ export class DepthCalibratorHPC {
             this.calibrationState[1] = bodyScale;
             this.calibrationState[3] = 1.0; // isDualAnchored = true
 
-            // 交叉分析：計算 Z 軸深度差
-            const zBody = focalLengthPixels * bodyScale;
-            this.calibrationState[2] = zBody - zBarbell; // 實際深度偏差
+            // 交叉分析：計算 Z 軸深度差 (假設相似三角形透視原理)
+            // 比例尺越小，代表物體離相機越近。藉此可推斷槓鈴與人體的相對深度。
+            this.calibrationState[2] = (bodyScale - plateScale) * 1000; // 簡易深度偏差指標 (供後續矩陣微調用)
+
         } else {
             // ===== 單錨定模式 (Single Anchoring) =====
-            // 解除共面耦合：不再強制設為相等，引入生物力學先驗偏移量 (Depth Offset Prior)
-            // 假設普通重量訓練動作(例如深蹲)中，身體質心平均比槓鈴平面深 150 毫米
-            const PRIOR_DEPTH_OFFSET_MM = 150.0;
-            const zBody = zBarbell + PRIOR_DEPTH_OFFSET_MM;
-            
-            // 根據 Z 深度偏移量反推此深度的身形比例尺
-            const bodyScale = zBody / focalLengthPixels;
-            
-            this.calibrationState[1] = bodyScale; 
-            this.calibrationState[2] = PRIOR_DEPTH_OFFSET_MM; 
+            // 無身高輸入時，強制讓身體比例尺等於槓鈴比例尺 (降級為共面假設)
+            this.calibrationState[1] = plateScale; 
+            this.calibrationState[2] = 0.0; // 無深度差
             this.calibrationState[3] = 0.0; // isDualAnchored = false
         }
     }
@@ -73,12 +63,13 @@ export class DepthCalibratorHPC {
     ): void {
         const plateScale = this.calibrationState[0];
         const bodyScale = this.calibrationState[1];
+        const isDualAnchored = this.calibrationState[3] === 1.0;
 
         // Hot-loop: Loop Unrolling & Branch Prediction Optimization
         for (let i = 0; i < nodeCount; i++) {
-            // 在新的架構下，單錨定與雙錨定皆已正確計算出 bodyScale
-            // 因此直接根據節點類型選擇 scale 即可，無需判斷 isDualAnchored
-            const scale = isBarbellNode[i] ? plateScale : bodyScale;
+            // 根據是否為雙錨定，以及節點的物理歸屬，套用不同的比例尺
+            // 如果是單錨定，bodyScale 本身就等於 plateScale，邏輯依然成立且無須多餘的 if 判斷
+            const scale = (isDualAnchored && !isBarbellNode[i]) ? bodyScale : plateScale;
 
             // In-place 修改，將像素轉為真實毫米 (mm)
             xCoords[i] = xCoords[i] * scale;

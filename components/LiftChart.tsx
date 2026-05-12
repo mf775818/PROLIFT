@@ -19,7 +19,6 @@ import {
   Legend
 } from 'recharts';
 import { LiftMetrics } from '../types';
-import { WeightliftingOnsetDetector } from '../SignalProcessing';
 
 interface LiftChartProps {
   data: LiftMetrics[];
@@ -56,38 +55,14 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
 
   const maxVel = useMemo(() => Math.max(...data.map(d => d.velocity), 0.1), [data]);
 
-  // --- INDUSTRIAL GRADE ADAPTIVE ONSET DETECTION (BURST SEGMENTATION) ---
-  const { startX, startTime } = useMemo(() => {
-    const fallback = { startX: data[0]?.x || 0, startTime: parseFloat(data[0]?.time || '0') };
-    if (data.length < 5) return fallback;
+  // --- INDUSTRIAL GRADE ZERO LINE DETECTION (RETROGRADE POWER-ZERO CONVERGENCE) ---
+  const startX = useMemo(() => {
+    if (data.length < 5) return data[0]?.x || 0;
 
-    // 1. Prepare Signal Data
-    const signalPoints = data.map(d => ({
-        time: parseFloat(d.time),
-        power: d.power
-    }));
-
-    // 2. Estimate Sampling Rate (Hz)
-    let samplingRate = 30; 
-    if (data.length > 10) {
-        const startT = parseFloat(data[0].time);
-        const endT = parseFloat(data[data.length - 1].time);
-        if (endT > startT) {
-            samplingRate = data.length / (endT - startT);
-        }
-    }
-
-    // 3. Execute Adaptive Onset Detection
-    const detector = new WeightliftingOnsetDetector();
-    const startIndex = detector.detectStartPoint(signalPoints, samplingRate);
-
-    if (startIndex !== -1 && startIndex < data.length) {
-        return { startX: data[startIndex].x, startTime: parseFloat(data[startIndex].time) };
-    }
-
-    // 4. FALLBACK: Robust Retrograde Walk (Only if Burst Detection Fails)
+    // 1. GLOBAL PEAK IDENTIFICATION
     let maxPower = -1;
     let peakIndex = 0;
+    
     for (let i = 0; i < data.length; i++) {
         if (data[i].power > maxPower) {
             maxPower = data[i].power;
@@ -95,17 +70,20 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
         }
     }
 
-    if (maxPower < 10) return fallback;
+    // Edge Case: If max power is negligible (no lift happened), fallback to start
+    if (maxPower < 10) return data[0].x;
 
-    const noiseFloor = Math.max(15, maxPower * 0.005);
+    // 2. RETROGRADE WALK TO ZERO POWER
+    const POWER_NOISE_FLOOR = Math.max(15, maxPower * 0.005);
     let zeroIndex = 0;
     for (let i = peakIndex; i >= 0; i--) {
-        if (data[i].power <= noiseFloor) {
+        const p = data[i].power;
+        if (p <= POWER_NOISE_FLOOR) {
             zeroIndex = i;
             break; 
         }
     }
-    return { startX: data[zeroIndex].x, startTime: parseFloat(data[zeroIndex].time) };
+    return data[zeroIndex].x;
   }, [data]);
 
   // Derived Physics Data
@@ -595,7 +573,6 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
               <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
-              <ReferenceLine x={startTime} stroke="#10b981" strokeDasharray="3 2" label={{ value: 'START', position: 'insideTopLeft', fill: '#10b981', fontSize: 10, fontWeight: 'bold' }} />
               {currentPoint && (
                   <>
                     <ReferenceDot yAxisId="left" x={currentPoint.timeVal} y={currentPoint.velocity} r={4} fill="#facc15" stroke="white" strokeWidth={2} />
@@ -623,7 +600,6 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
               <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
-              <ReferenceLine x={startTime} stroke="#10b981" strokeDasharray="3 2" label={{ value: 'START', position: 'insideTopLeft', fill: '#10b981', fontSize: 10, fontWeight: 'bold' }} />
               {currentPoint && (
                   <>
                     <ReferenceDot yAxisId="left" x={currentPoint.timeVal} y={currentPoint.force} r={4} fill="#ef4444" stroke="white" strokeWidth={2} />
@@ -644,7 +620,6 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
               <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
-              <ReferenceLine x={startTime} stroke="#10b981" strokeDasharray="3 2" label={{ value: 'START', position: 'insideTopLeft', fill: '#10b981', fontSize: 10, fontWeight: 'bold' }} />
               {currentPoint && (
                  <ReferenceDot x={currentPoint.timeVal} y={currentPoint.power} r={4} fill="#ef4444" stroke="white" strokeWidth={2} />
               )}
@@ -662,7 +637,6 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
               <ReferenceLine x={currentTime} stroke="white" strokeDasharray="3 3" opacity={0.5} />
-              <ReferenceLine x={startTime} stroke="#10b981" strokeDasharray="3 2" label={{ value: 'START', position: 'insideTopLeft', fill: '#10b981', fontSize: 10, fontWeight: 'bold' }} />
               {currentPoint && (
                 <>
                   <ReferenceDot x={currentPoint.timeVal} y={currentPoint.hipAngle} r={3} fill="#3b82f6" stroke="none" />

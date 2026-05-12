@@ -262,9 +262,6 @@ const App = () => {
       const root = document.documentElement;
 
       const handleMove = (moveEvent: MouseEvent | TouchEvent) => {
-          if (moveEvent.cancelable) {
-              moveEvent.preventDefault();
-          }
           // Use requestAnimationFrame to throttle and ensure DOM writes happen once per frame
           requestAnimationFrame(() => {
               const currentX = 'touches' in moveEvent ? moveEvent.touches[0].clientX : (moveEvent as MouseEvent).clientX;
@@ -340,11 +337,8 @@ const App = () => {
                         type="number"
                         min="20"
                         max="260"
-                        inputMode="decimal"
-                        pattern="[0-9]*"
                         value={barbellMass}
-                        onChange={(e) => setBarbellMass(Math.max(0, parseInt(e.target.value) || 0))}
-                        onKeyDown={(e) => { if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault(); }}
+                        onChange={(e) => setBarbellMass(parseInt(e.target.value) || 0)}
                         onFocus={(e) => e.target.select()}
                         className="bg-zinc-900 text-yellow-500 text-sm font-mono font-bold w-16 outline-none text-center placeholder:text-zinc-700 border border-zinc-700 hover:border-yellow-500 focus:border-yellow-500 hover:bg-zinc-800 focus:bg-zinc-800 cursor-text transition-all px-2 py-1 rounded shadow-inner"
                     />
@@ -364,11 +358,8 @@ const App = () => {
                         min="100"
                         max="250"
                         placeholder="Auto"
-                        inputMode="decimal"
-                        pattern="[0-9]*"
                         value={userHeightCm}
-                        onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value)))}
-                        onKeyDown={(e) => { if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault(); }}
+                        onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
                         onFocus={(e) => e.target.select()}
                         className="bg-zinc-900 text-blue-400 text-sm font-mono font-bold w-16 outline-none text-center placeholder:text-zinc-700 border border-zinc-700 hover:border-blue-400 focus:border-blue-400 hover:bg-zinc-800 focus:bg-zinc-800 cursor-text transition-all px-2 py-1 rounded shadow-inner"
                     />
@@ -405,8 +396,9 @@ const App = () => {
 
       {/* Main Workspace - UX Optimized Resizable Layout */}
       {/* Replaced fixed Grid with Flex to support drag-resizing */}
-      <div className="flex-1 flex flex-col lg:flex-row bg-black overflow-y-auto overscroll-contain relative min-h-0 min-w-0">
+      <div className="flex-1 flex flex-col lg:flex-row bg-black overflow-hidden relative min-h-0 min-w-0">
         
+
         {/* CENTER: VIEWPORT */}
         <main 
             className={`relative flex-none lg:flex-1 w-full bg-black flex items-center justify-center overflow-hidden border-b lg:border-b-0 border-zinc-800 scrollbar-hide min-w-0 min-h-0 touch-none ${isResizing ? 'pointer-events-none' : ''}`}
@@ -434,17 +426,15 @@ const App = () => {
         </div>
 
         {/* MOBILE CONTROLS (Between Video and Tabs) */}
-        <div className="lg:hidden px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex flex-col gap-3 shrink-0">
+        <div className="lg:hidden px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex flex-col gap-3 shrink-0 touch-none">
             <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-2">
                     <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Barbell Wgt</span>
                     <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded px-2 py-1 shadow-inner">
                        <input 
                           type="number" min="20" max="260"
-                          inputMode="decimal" pattern="[0-9]*"
                           value={barbellMass}
-                          onChange={(e) => setBarbellMass(Math.max(0, parseInt(e.target.value) || 0))}
-                          onKeyDown={(e) => { if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault(); }}
+                          onChange={(e) => setBarbellMass(parseInt(e.target.value) || 0)}
                           onFocus={(e) => e.target.select()}
                           className="w-16 bg-transparent text-yellow-500 text-xs text-center outline-none font-mono font-bold"
                        />
@@ -456,10 +446,8 @@ const App = () => {
                     <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded px-2 py-1 shadow-inner">
                        <input 
                           type="number" min="100" max="250" placeholder="Auto"
-                          inputMode="decimal" pattern="[0-9]*"
                           value={userHeightCm}
-                          onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value)))}
-                          onKeyDown={(e) => { if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault(); }}
+                          onChange={(e) => setUserHeightCm(e.target.value === '' ? '' : parseInt(e.target.value))}
                           onFocus={(e) => e.target.select()}
                           className="w-16 bg-transparent text-blue-400 text-xs text-center outline-none font-mono font-bold placeholder:text-zinc-600"
                        />
@@ -470,7 +458,7 @@ const App = () => {
         </div>
 
         {/* MOBILE TABS */}
-        <div className="lg:hidden flex bg-zinc-900 border-b border-zinc-800 sticky top-0 z-10 shrink-0">
+        <div className="lg:hidden flex bg-zinc-900 border-b border-zinc-800 sticky top-0 z-10 shrink-0 touch-none">
             <button 
                 onClick={() => setActiveTab('chart')} 
                 className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'chart' ? 'border-yellow-500 text-white bg-zinc-800' : 'border-transparent text-zinc-500'}`}
@@ -498,7 +486,7 @@ const App = () => {
           
           {/* Chart Section */}
           <div 
-            className={`flex-col min-h-[200px] lg:min-h-0 border-b border-zinc-800 overscroll-contain ${activeTab === 'chart' ? 'flex flex-1 lg:flex-none' : 'hidden lg:flex lg:flex-none'} ${isResizing ? 'pointer-events-none' : ''}`}
+            className={`flex-col min-h-[200px] lg:min-h-0 border-b border-zinc-800 touch-none ${activeTab === 'chart' ? 'flex flex-1 lg:flex-none' : 'hidden lg:flex lg:flex-none'} ${isResizing ? 'pointer-events-none' : ''}`}
             style={window.innerWidth < 1024 ? {} : { height: `var(--chart-height, ${layout.chartHeightPct}%)` }}
           >
              <div className="p-3 bg-zinc-800/30 border-b border-zinc-800 flex justify-between items-center">
@@ -530,7 +518,7 @@ const App = () => {
           </div>
 
           {/* Stats Section */}
-          <div className={`flex-col bg-zinc-900 overflow-y-auto overscroll-contain ${activeTab === 'stats' ? 'flex flex-1' : 'hidden lg:flex lg:flex-1'}`}>
+          <div className={`flex-col bg-zinc-900 overflow-y-auto overscroll-y-contain ${activeTab === 'stats' ? 'flex flex-1' : 'hidden lg:flex lg:flex-1'}`}>
             <div className="px-4 py-3 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 sticky top-0 z-10">
                 <h3 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
                     Performance Metrics

@@ -50,32 +50,23 @@ export class BarbellRigidBodyHPC {
             outCorrectedCenter[2] = this.barbellCenter3D[2];
         } else {
             // 運動過程中 (動態狀態)
-            // 將原本固定的 50mm 閾值改為「特徵距離百分比」：以內部袖套距離 (約相近於握距) 的 10% 為基準
-            // 動態適應不同體型
-            const dynamicThreshold = this.INNER_SLEEVE_DIST * 0.10; // 約 131mm
-            
+            // 允許微小的身體扭轉或晃動，但套用「彈簧阻尼模型 (Spring-Damper Model)」
+            // 如果 AI 預測偏差超過 50mm，強制拉回 (因為人類不可能把 200kg 槓鈴背歪 5公分還能蹲)
+            const MAX_ALLOWED_DRIFT_MM = 50.0;
             const currentDrift = Math.sqrt(driftX * driftX + driftY * driftY);
 
-            // 實作彈簧阻尼融合模型 (Soft Blending - Sigmoid/Smoothstep)
-            // 摒棄 if-else 硬切斷，計算信賴權重 w (0 代表完全信任 AI 預測, 1 代表完全服格於物理剛體約束)
-            let w = 0.0;
-            const lowerBound = dynamicThreshold * 0.4;
-            const upperBound = dynamicThreshold * 1.5;
-
-            if (currentDrift <= lowerBound) {
-                w = 0.0;
-            } else if (currentDrift >= upperBound) {
-                w = 1.0;
+            if (currentDrift > MAX_ALLOWED_DRIFT_MM) {
+                // 執行正規化拉回，保護後續 PhysicsEngine 的數據不被污染
+                const pullFactor = MAX_ALLOWED_DRIFT_MM / currentDrift;
+                outCorrectedCenter[0] = this.barbellCenter3D[0] + driftX * pullFactor;
+                outCorrectedCenter[1] = rawBodyCenter[1]; // Y軸交由動力學引擎處理
+                outCorrectedCenter[2] = this.barbellCenter3D[2]; 
             } else {
-                // 平滑過渡 (Smoothstep): 一階連續性 (C1 Continuity)
-                const t = (currentDrift - lowerBound) / (upperBound - lowerBound);
-                w = t * t * (3.0 - 2.0 * t);
+                // 誤差在合理範圍內，信任 AI 並微調
+                outCorrectedCenter[0] = rawBodyCenter[0];
+                outCorrectedCenter[1] = rawBodyCenter[1];
+                outCorrectedCenter[2] = rawBodyCenter[2];
             }
-
-            // 平滑插值結合預測座標與理論絕對座標
-            outCorrectedCenter[0] = rawBodyCenter[0] * (1.0 - w) + this.barbellCenter3D[0] * w;
-            outCorrectedCenter[1] = rawBodyCenter[1]; // Y軸始終交由動力學引擎處理
-            outCorrectedCenter[2] = rawBodyCenter[2] * (1.0 - w) + this.barbellCenter3D[2] * w;
         }
     }
 
