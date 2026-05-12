@@ -1,20 +1,25 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# ProLift
+<img width="1495" height="1107" alt="Gemini_Generated_Image_b224kqb224kqb224(1)" src="https://github.com/user-attachments/assets/4f700d98-6a5e-454c-9bd8-c333ef99a949" />
 
-# Run and deploy your AI Studio app
+ProLift is a high-performance, client-side web application designed for professional barbell lift analysis. It leverages modern web technologies to provide accurate biomechanical metrics directly in the browser.
 
-This contains everything you need to run your app locally.
+## Core Purpose
+The system provides athletes and coaches with precise data on barbell trajectory, velocity, and biomechanical positioning. By processing video data locally, it ensures high privacy and low-latency feedback for technical optimization.
 
-View your app in AI Studio: https://ai.studio/apps/ce58a5c2-87a9-4a4f-b174-8e42251f7f16
+## Technical Architecture
+- **High-Performance Computing (HPC):** Dedicated modules for physics simulation (`PhysicsEngineHPC`), rigid body dynamics (`BarbellRigidBodyHPC`), and trajectory optimization using Kalman filters.
+- **Offline Video Processing:** Utilizes `OfflineVideoDecoder` and a custom `MP4Demuxer` to handle frame-accurate data without uploading files to a server.
+- **Worker-Based Metrics:** Offloads heavy calculations to Web Workers (`metrics.worker.ts`) to maintain a smooth UI performance.
+- **Biomechanical Modeling:** Implements projective math and perspective correction to translate 2D video coordinates into meaningful physical measurements.
 
-## Run Locally
+## Key Features
+- **Trajectory Tracking:** Real-time visualization of the bar path.
+- **Velocity Metrics:** Calculation of peak and average concentric velocity.
+- **Calibration Engine:** Automated depth and perspective calibration for consistent data accuracy.
+- **Visual Analytics:** Interactive charts for power output and displacement analysis.
 
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Tech Stack
+- **Frontend:** React, Vite, TypeScript
+- **Processing:** WebCodecs API, Web Workers
+- **Math & Physics:** Custom HPC libraries for linear algebra and kinematics
+"""
