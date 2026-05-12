@@ -320,54 +320,101 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
   
   // 【工業級修復 1】: 獨立的拖曳狀態記憶體，不受生命週期與渲染影響
   const hasDraggedRef = useRef<boolean>(false);
-  const dragStartRef = useRef<{ x: number, y: number, min: number, max: number, moved: boolean } | null>(null);
-  
-  const getCoordinates = (e: React.MouseEvent | React.TouchEvent | React.PointerEvent) => {
-      if ('touches' in e && e.touches.length > 0) {
-          return { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      } else if ('changedTouches' in e && e.changedTouches.length > 0) {
-          return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
-      }
-      return { x: (e as React.MouseEvent).clientX, y: (e as React.MouseEvent).clientY };
+  const dragStartRef = useRef<{ 
+      x: number, 
+      y: number, 
+      min: number, 
+      max: number, 
+      moved: boolean,
+      pinchDist?: number
+  } | null>(null);
+
+  const getPinchDistance = (touches: React.TouchList) => {
+      if (touches.length < 2) return 0;
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.sqrt(dx * dx + dy * dy);
   };
 
-  const handlePointerDown = (e: React.PointerEvent | React.TouchEvent | React.MouseEvent) => {
-      const coords = getCoordinates(e);
+  const getPinchCenter = (touches: React.TouchList) => {
+      if (touches.length < 2) return { x: touches[0].clientX, y: touches[0].clientY };
+      return { 
+          x: (touches[0].clientX + touches[1].clientX) / 2, 
+          y: (touches[0].clientY + touches[1].clientY) / 2 
+      };
+  };
+
+  const startAction = (coords: {x: number, y: number}, pinchDist?: number) => {
       const currentZoom = zoomDomain || { min: processedData[0].timeVal, max: processedData[processedData.length - 1].timeVal };
       dragStartRef.current = { 
           x: coords.x, 
           y: coords.y,
           min: currentZoom.min, 
           max: currentZoom.max,
-          moved: false
+          moved: false,
+          pinchDist
       };
-      // 每次按下時，重置拖曳記憶
       hasDraggedRef.current = false; 
   };
 
-  const handlePointerMove = (e: React.PointerEvent | React.TouchEvent | React.MouseEvent) => {
-      // 嚴格攔截：如果沒有按下錨點，絕對不執行拖曳運算
-      if (!dragStartRef.current || !zoomDomain || !chartContainerRef.current) return;
-      
-      const coords = getCoordinates(e);
-      const dx = coords.x - dragStartRef.current.x;
-      
-      if (Math.abs(dx) > 5) {
-          dragStartRef.current.moved = true;
-          // 【工業級修復 2】: 只要移動超過 5px，就死鎖標記為「已拖曳」
-          hasDraggedRef.current = true; 
+  const handleTouchStart = (e: React.TouchEvent) => {
+      if (mode === 'trajectory' || processedData.length === 0) return;
+      if (e.touches.length === 1) {
+          startAction({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+      } else if (e.touches.length === 2) {
+          startAction(getPinchCenter(e.touches), getPinchDistance(e.touches));
       }
+  };
 
+  const handleMouseDown = (e: React.MouseEvent) => {
+      if (mode === 'trajectory' || processedData.length === 0) return;
+      startAction({ x: e.clientX, y: e.clientY });
+  };
+
+  const handleMoveAction = (coords: {x: number, y: number}, pinchDist?: number) => {
+      if (!dragStartRef.current || !chartContainerRef.current) return;
+      
       const width = chartContainerRef.current.clientWidth;
-      const domainRange = zoomDomain.max - zoomDomain.min;
-      
-      const shift = -(dx / width) * domainRange;
-      
-      let newMin = dragStartRef.current.min + shift;
-      let newMax = dragStartRef.current.max + shift;
-      
       const dataMin = processedData[0].timeVal;
       const dataMax = processedData[processedData.length - 1].timeVal;
+      let newMin = dragStartRef.current.min;
+      let newMax = dragStartRef.current.max;
+
+      if (pinchDist && dragStartRef.current.pinchDist) {
+          const zoomFactor = dragStartRef.current.pinchDist / pinchDist;
+          let currentZoomDomain = dragStartRef.current.max - dragStartRef.current.min;
+          
+          let newDuration = currentZoomDomain * zoomFactor;
+          const fullDuration = dataMax - dataMin;
+          if (newDuration >= fullDuration * 0.99) {
+              setZoomDomain(null);
+              return;
+          }
+          if (newDuration < 0.5) newDuration = 0.5;
+
+          const rect = chartContainerRef.current.getBoundingClientRect();
+          const picaX = coords.x - rect.left;
+          const pct = Math.max(0, Math.min(1, picaX / width));
+          const timeAtPinch = dragStartRef.current.min + currentZoomDomain * pct;
+
+          newMin = timeAtPinch - newDuration * pct;
+          newMax = timeAtPinch + newDuration * (1 - pct);
+          
+          hasDraggedRef.current = true;
+          dragStartRef.current.min = newMin;
+          dragStartRef.current.max = newMax;
+          dragStartRef.current.pinchDist = pinchDist; 
+      } else {
+          const dx = coords.x - dragStartRef.current.x;
+          if (Math.abs(dx) > 5) {
+              dragStartRef.current.moved = true;
+              hasDraggedRef.current = true; 
+          }
+          const domainRange = dragStartRef.current.max - dragStartRef.current.min;
+          const shift = -(dx / width) * domainRange;
+          newMin += shift;
+          newMax += shift;
+      }
 
       if (newMin < dataMin) {
            const diff = dataMin - newMin;
@@ -380,11 +427,29 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
           newMax += diff;
       }
       
-      setZoomDomain({ min: newMin, max: newMax });
+      if (newMin < dataMin) newMin = dataMin;
+      if (newMax > dataMax) newMax = dataMax;
+
+      if (!zoomDomain || Math.abs(zoomDomain.min - newMin) > 0.001 || Math.abs(zoomDomain.max - newMax) > 0.001) {
+          setZoomDomain({ min: newMin, max: newMax });
+      }
   };
 
-  const handlePointerUp = (e: React.PointerEvent | React.TouchEvent | React.MouseEvent) => {
-      // 【工業級修復 3】: 徹底釋放拖曳錨點！防止單純 Hover 時觸發幽靈拖曳導致回彈
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+      if (e.touches.length === 1) {
+          handleMoveAction({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+      } else if (e.touches.length === 2) {
+          handleMoveAction(getPinchCenter(e.touches), getPinchDistance(e.touches));
+      }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+      if (e.buttons === 1) {
+          handleMoveAction({ x: e.clientX, y: e.clientY });
+      }
+  };
+
+  const handleEndAction = () => {
       dragStartRef.current = null;
   };
 
@@ -550,12 +615,15 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       <div 
          ref={chartContainerRef}
          className={`flex-1 w-full min-h-0 relative ${zoomDomain ? 'cursor-ew-resize' : 'cursor-pointer'} touch-none`}
-         onMouseLeave={() => { onCursorMove && onCursorMove(null); handlePointerUp({ clientX: -999, clientY: -999 } as any); }}
+         onMouseLeave={() => { onCursorMove && onCursorMove(null); handleEndAction(); }}
          onWheel={handleWheel}
-         onPointerDown={handlePointerDown}
-         onPointerMove={handlePointerMove}
-         onPointerUp={handlePointerUp}
-         onPointerCancel={handlePointerUp}
+         onTouchStart={handleTouchStart}
+         onTouchMove={handleTouchMove}
+         onTouchEnd={handleEndAction}
+         onTouchCancel={handleEndAction}
+         onMouseDown={handleMouseDown}
+         onMouseMove={handleMouseMove}
+         onMouseUp={handleEndAction}
          onDoubleClick={handleDoubleClick}
       >
           {/* 將 resizeTick 交給 ResponsiveContainer，只在拖曳結束後讓圖表引擎重新計算一次座標 */}
