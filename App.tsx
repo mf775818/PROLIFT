@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { VideoAnalyzer } from './components/VideoAnalyzer';
 import { LiftChart } from './components/LiftChart';
 import { LiftMetrics } from './types';
+import { OnsetDetectorHPC } from './src/lib/hpc/OnsetDetectorHPC';
 
 // --- UX COMPONENT: RESIZER HANDLE ---
 const Resizer = ({ orientation, onResizeStart, isResizing }: { orientation: 'vertical' | 'horizontal', onResizeStart: (e: React.MouseEvent | React.TouchEvent) => void, isResizing: boolean }) => {
@@ -127,6 +128,11 @@ const App = () => {
 
      // RFD (Rate of Force Development) Estimate
      const rfd = maxForce / 0.25; 
+     
+     // Industrial Grade Onset Detection to find true start time
+     const powers = allMetrics.map(d => d.power);
+     const onsetIndex = OnsetDetectorHPC.detectBatchOnset(powers, 5);
+     const startTime = parseFloat(allMetrics[onsetIndex]?.time) || 0;
 
      return { 
          maxVel, timeMaxVel, 
@@ -134,7 +140,8 @@ const App = () => {
          maxPwr, timeMaxPwr, 
          maxForce, timeMaxForce, 
          maxAccel, timeMaxAccel, 
-         totalWork, rfd 
+         totalWork, rfd,
+         startTime
      };
   }, [allMetrics, barbellMass]);
 
@@ -639,6 +646,25 @@ const App = () => {
                                   <span className="text-xl font-mono font-bold text-white mt-1">{stats.totalWork.toFixed(0)}<span className="text-xs text-zinc-600 ml-1">J</span></span>
                                </div>
                            </div>
+                       </div>
+                       
+                       <div 
+                                onClick={() => handleSeek(stats?.startTime || 0)} 
+                                className="mt-3 relative overflow-hidden bg-indigo-900/40 p-3 rounded-xl border border-indigo-500/30 flex items-center justify-center cursor-pointer hover:bg-indigo-800/60 hover:border-indigo-400/60 hover:shadow-[0_0_12px_rgba(99,102,241,0.25)] active:scale-95 transition-all duration-300 group"
+                            >
+                                <div className="absolute inset-0 bg-indigo-400/10 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                                <div className="flex items-center gap-2.5 z-10 w-full justify-center">
+                                    <div className="bg-indigo-500/20 p-1.5 rounded-lg group-hover:bg-indigo-500/40 transition-colors shadow-inner shadow-indigo-500/20">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-indigo-400 group-hover:text-indigo-300 transition-colors">
+                                            <polygon points="19 20 9 12 19 4 19 20"/>
+                                            <line x1="5" y1="19" x2="5" y2="5"/>
+                                        </svg>
+                                    </div>
+                                    <div className="flex flex-col justify-center text-left">
+                                        <span className="text-[8px] text-indigo-300/70 group-hover:text-indigo-300/90 uppercase font-black tracking-[0.2em] transition-colors leading-[1.2]">Jump to</span>
+                                        <span className="text-[11px] text-indigo-100 uppercase font-bold tracking-widest transition-colors leading-[1.2]">Lift Start Time</span>
+                                    </div>
+                                </div>
                        </div>
                        
                        {/* Efficiency Bar */}

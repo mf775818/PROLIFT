@@ -682,29 +682,46 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       startXRef.current = 0;
       setIsPlaying(false);
 
+      // --- INDUSTRIAL DECODER FLUSH PATTERN ---
+      // Resetting the elements explicitly prevents ghost states in Safari/Chrome HEVC decoders
+      if (videoRef.current) {
+          videoRef.current.pause();
+          videoRef.current.src = "";
+          videoRef.current.load();
+      }
+      if (processingVideoRef.current) {
+          processingVideoRef.current.pause();
+          processingVideoRef.current.src = "";
+          processingVideoRef.current.load();
+      }
+
       let objectUrl: string | null = null;
 
+      console.log(`[VideoLoad] Loading video file: ${videoFile.name} (${(videoFile.size / 1024 / 1024).toFixed(2)} MB), Type: ${videoFile.type}`);
       prepareVideoFile(videoFile).then(url => {
+          console.log("[VideoLoad] URL created, setting up video elements...");
           objectUrl = url;
           setVideoUrl(url);
           const hiddenVid = processingVideoRef.current;
           try {
-              if (hiddenVid && hiddenVid.src !== url) {
-                  // If there's an ongoing fetch, setting src interrupts it, which causes a benign abort warning.
-                  // We accept this since we need the new video.
-                  hiddenVid.src = url;
+              if (hiddenVid) {
+                  // Explicitly setting attributes before source application
                   hiddenVid.muted = true;
                   hiddenVid.playsInline = true;
                   hiddenVid.crossOrigin = "anonymous";
+                  hiddenVid.preload = "auto";
                   
-                  // 🔥 Fix 2: 同樣對隱藏的分析用影片施加 0.001 秒 Hack
+                  hiddenVid.src = url;
+                  
+                  // 🔥 iOS/Safari HEVC Decode Kickstart
                   hiddenVid.onloadeddata = () => {
                       if (hiddenVid.currentTime === 0) {
                           hiddenVid.currentTime = 0.001;
                       }
+                      console.log("[VideoLoad] Hidden analysis video ready state: ", hiddenVid.readyState);
                   };
 
-                  hiddenVid.load(); // 確保隱藏影片重新載入來源
+                  hiddenVid.load(); 
               }
           } catch (e) {
               console.warn("Could not setup hidden analysis video: ", e);
@@ -760,8 +777,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   }, [analysisState, isPlaying]); // Depend on isPlaying to toggle correctly
 
   const prepareVideoFile = async (file: File): Promise<string> => {
-      const rawUrl = URL.createObjectURL(file);
-      return Promise.resolve(rawUrl);
+      try {
+          const rawUrl = URL.createObjectURL(file);
+          return Promise.resolve(rawUrl);
+      } catch (e) {
+          console.error("[VideoLoad] CRITICAL ERROR generating Blob URL:", e);
+          throw e;
+      }
   };
 
   const updateVideoLayout = useCallback(() => {
@@ -860,17 +882,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       } else {
           setIsSelectingROI(true);
           setNormalizedROI(null);
-          if (videoRef.current) {
-              try {
-                  if (videoRef.current.readyState >= 1) {
-                      videoRef.current.currentTime = 0;
-                  }
-              } catch (e) {
-                  console.warn("Could not reset currentTime (ready state check): ", e);
-              }
-              videoRef.current.pause();
-              setIsPlaying(false);
-          }
       }
   };
 
@@ -1555,6 +1566,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   };
 
   const handleVideoError = () => {
+      console.error("[VideoLoad] FAILED to decode or play video. This usually means an unsupported codec or corrupted file.");
       setVideoError("Format unsupported by this browser. If it is an iPhone .MOV, try using Safari or changing iOS camera format to 'Most Compatible'.");
       setIsVideoLoading(false);
   };
@@ -1562,9 +1574,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const handleCanPlay = () => {
       setIsVideoLoading(false);
       
-      // 🔥 Fix 2: iOS Safari MOV 黑畫面 Hack
       if (videoRef.current) {
-          // 如果時間是 0，強制跳轉到 0.001 秒，迫使 iOS 渲染第一幀預覽
+          const v = videoRef.current;
+          console.log(`[VideoLoad] SUCCESS: Format is playable. Resolution: ${v.videoWidth}x${v.videoHeight}, Duration: ${v.duration.toFixed(2)}s`);
+
+          // 1. iOS Safari MOV黑畫面修正
           if (videoRef.current.currentTime === 0) {
               videoRef.current.currentTime = 0.001;
           }
