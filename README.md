@@ -1,6 +1,8 @@
 # ProLift
 <img width="1495" height="1107" alt="Gemini_Generated_Image_b224kqb224kqb224(1)" src="https://github.com/user-attachments/assets/4f700d98-6a5e-454c-9bd8-c333ef99a949" />
 
+**🚀 Live Demo / Deployment:** [https://proliftvbt.netlify.app/](https://proliftvbt.netlify.app/)
+
 ProLift is a high-performance, client-side web application designed for professional barbell lift analysis. It leverages modern web technologies to provide accurate biomechanical metrics directly in the browser.
 
 ## Core Purpose
