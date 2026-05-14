@@ -880,6 +880,18 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       if (isSelectingROI) {
           setIsSelectingROI(false);
       } else {
+          // Industrial Grade: Reset video to first frame when entering ROI selection 
+          // to ensure the user draws based on the initial lift position.
+          if (videoRef.current) {
+              try {
+                  // Using 0.001 instead of 0 avoids black screen issues on Safari/iOS
+                  videoRef.current.currentTime = 0.001;
+                  videoRef.current.pause();
+                  setIsPlaying(false);
+              } catch (e) {
+                  console.warn("ROI Transition Seek Error:", e);
+              }
+          }
           setIsSelectingROI(true);
           setNormalizedROI(null);
       }
@@ -1804,8 +1816,41 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
               <div className="absolute top-4 right-4 z-20 animate-fade-in group-hover:opacity-100 opacity-0 transition-opacity">
                   <button 
                       onClick={() => {
+                          // Industrial Grade Comprehensive Reset
                           setAnalysisState(AnalysisState.IDLE);
                           setNormalizedROI(null);
+                          setIsSelectingROI(false);
+                          setProgress(0);
+                          
+                          // Clear internal data buffers
+                          fullLiftHistory.current = [];
+                          rawDataRef.current = [];
+                          renderCommandsRef.current = [];
+                          lastRenderedIndexRef.current = -1;
+                          startXRef.current = 0;
+                          startYRef.current = 0;
+                          
+                          // Flush Canvas Graphics
+                          const pathCtx = pathCanvasRef.current?.getContext('2d');
+                          if (pathCtx && pathCanvasRef.current) {
+                              pathCtx.clearRect(0, 0, pathCanvasRef.current.width, pathCanvasRef.current.height);
+                          }
+                          const overlayCtx = canvasRef.current?.getContext('2d');
+                          if (overlayCtx && canvasRef.current) {
+                              overlayCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+                          }
+
+                          // Precise Video Re-seeding
+                          if (videoRef.current) {
+                              try {
+                                  videoRef.current.currentTime = 0.001;
+                                  videoRef.current.pause();
+                                  setIsPlaying(false);
+                              } catch (e) {
+                                  console.warn("Reset Seek Failed:", e);
+                              }
+                          }
+                          
                           onResetRef.current?.();
                       }}
                       className="bg-zinc-900/80 backdrop-blur-md text-zinc-400 hover:text-white px-3 py-2 rounded-lg text-xs font-bold border border-zinc-700 shadow-xl flex items-center gap-2 transition-all"
