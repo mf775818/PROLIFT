@@ -1817,7 +1817,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           {/* ANALYSIS PROGRESS */}
           {analysisState === AnalysisState.ANALYZING && (
               <div className="absolute inset-0 flex flex-col items-center justify-center z-50">
-                  <div className="bg-black/80 backdrop-blur-md p-6 rounded-2xl border border-yellow-500/30 flex flex-col items-center shadow-2xl">
+                  <div className="bg-black/85 opacity-85 backdrop-blur-sm p-6 rounded-2xl border border-yellow-500/30 flex flex-col items-center shadow-2xl">
                       <div className="w-12 h-12 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin mb-4"></div>
                       <h3 className="text-yellow-400 font-bold tracking-widest text-sm mb-1">ANALYZING</h3>
                       <p className="text-zinc-500 text-[10px] font-mono mb-4">MEDIA-PIPE BIOMECHANICS V2</p>
