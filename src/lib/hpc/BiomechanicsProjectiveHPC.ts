@@ -34,14 +34,37 @@ export class BiomechanicsProjectiveHPC {
         outMetrics: Float64Array,
         barLeft: Float64Array, barRight: Float64Array,
         shoulderLeft: Float64Array, shoulderRight: Float64Array,
-        hipLeft: Float64Array, hipRight: Float64Array
+        hipLeft: Float64Array, hipRight: Float64Array,
+        homographyMatrix: Float64Array | null = null
     ): void {
+        // 若有提供反投影/校正矩陣，先將所有像素特徵點轉換至真實的 3D 物理正交平面
+        let pB_L = barLeft, pB_R = barRight;
+        let pS_L = shoulderLeft, pS_R = shoulderRight;
+        let pH_L = hipLeft, pH_R = hipRight;
+
+        if (homographyMatrix) {
+            pB_L = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pB_L, homographyMatrix, barLeft);
+            pB_R = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pB_R, homographyMatrix, barRight);
+            pS_L = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pS_L, homographyMatrix, shoulderLeft);
+            pS_R = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pS_R, homographyMatrix, shoulderRight);
+            pH_L = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pH_L, homographyMatrix, hipLeft);
+            pH_R = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pH_R, homographyMatrix, hipRight);
+
+            // Homogeneous normalization (w division)
+            const pts = [pB_L, pB_R, pS_L, pS_R, pH_L, pH_R];
+            for (const p of pts) {
+                if (Math.abs(p[2]) > 1e-10) {
+                    p[0] /= p[2]; p[1] /= p[2]; p[2] = 1.0;
+                }
+            }
+        }
+
         // 1. 求出槓鈴的射影直線 (L_bar)
-        this.crossProduct(this.tempLineBar, barLeft, barRight);
+        this.crossProduct(this.tempLineBar, pB_L, pB_R);
 
         // 2. 求出肩膀與髖部的射影直線
-        this.crossProduct(this.tempLineShoulder, shoulderLeft, shoulderRight);
-        this.crossProduct(this.tempLineHip, hipLeft, hipRight);
+        this.crossProduct(this.tempLineShoulder, pS_L, pS_R);
+        this.crossProduct(this.tempLineHip, pH_L, pH_R);
 
         // 3. 求出槓鈴與肩膀的交點 (理論上如果是平行的，會交於無窮遠處的消失點)
         this.crossProduct(this.tempVanishingPoint, this.tempLineBar, this.tempLineShoulder);
@@ -49,9 +72,8 @@ export class BiomechanicsProjectiveHPC {
         // 正規化消失點 (轉換回 2D 歐氏空間進行距離評估)
         let w = this.tempVanishingPoint[2];
         let twistShoulder = 0;
-        if (Math.abs(w) > 1e-7) {
-             // 這裡計算的是射影空間中的散度。
-             // 工業級做法：計算肩膀線段的方向向量與槓鈴線段方向向量的偏差角
+        if (Math.abs(w) > 1e-7 || homographyMatrix) {
+             // 降維/反投影後，計算物理平面上的真實夾角
              twistShoulder = this.calculateAngularDivergence(this.tempLineBar, this.tempLineShoulder);
         }
 

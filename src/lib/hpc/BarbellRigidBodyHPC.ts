@@ -36,30 +36,32 @@ export class BarbellRigidBodyHPC {
         this.barbellCenter3D[1] = (leftPlateCenter[1] + rightPlateCenter[1]) * 0.5;
         this.barbellCenter3D[2] = (leftPlateCenter[2] + rightPlateCenter[2]) * 0.5; // Z軸深度中心
 
-        // 2. 幾何先驗誤差計算 (Geometric Prior Error)
-        // 計算 AI 骨架中心與絕對剛體中心的偏差
+        // 2. 幾何先驗誤差計算 (Geometric Prior Error & Whip Correction)
+        // 計算 AI 骨架中心與絕對剛體中心的偏差。
+        // [大重量形變對策]：標準槓鈴在 200kg+ 時會產生明顯形變 (Whip/Bend)。
+        // 兩側槓片會下垂，使得物理中點 Y 座標變得比真實肩膀/背部扛槓位置還低。
+        // 因此我們在約束模型中必須「放寬 Y 軸 (高度) 的誤差判定」，僅嚴格約束 X 與 Z 軸的對稱性。
         const driftX = rawBodyCenter[0] - this.barbellCenter3D[0];
-        const driftY = rawBodyCenter[1] - this.barbellCenter3D[1];
-
+        
         // 3. 智慧融合修正 (Smart Fusion)
         if (isSetupPhase) {
             // 在起槓預備時，人體"必定"在正中央。
             // 我們完全捨棄 AI 骨架的 X 軸與 Z 軸預測，強制綁定於槓鈴中心
             outCorrectedCenter[0] = this.barbellCenter3D[0];
-            outCorrectedCenter[1] = rawBodyCenter[1]; // Y軸(高度)保留，因為深蹲高低有差異
+            outCorrectedCenter[1] = rawBodyCenter[1]; // Y軸(高度)保留，交由 AI 骨架與後續平滑處理
             outCorrectedCenter[2] = this.barbellCenter3D[2];
         } else {
             // 運動過程中 (動態狀態)
             // 允許微小的身體扭轉或晃動，但套用「彈簧阻尼模型 (Spring-Damper Model)」
-            // 如果 AI 預測偏差超過 50mm，強制拉回 (因為人類不可能把 200kg 槓鈴背歪 5公分還能蹲)
+            // 僅對水平軸 (X) 與深度軸 (Z) 計算偏差，忽略因槓鈴受力形變 (Whip) 產生的 Y 軸巨大落差。
             const MAX_ALLOWED_DRIFT_MM = 50.0;
-            const currentDrift = Math.sqrt(driftX * driftX + driftY * driftY);
+            const currentDrift = Math.abs(driftX); // 僅評估水平面偏移
 
             if (currentDrift > MAX_ALLOWED_DRIFT_MM) {
                 // 執行正規化拉回，保護後續 PhysicsEngine 的數據不被污染
                 const pullFactor = MAX_ALLOWED_DRIFT_MM / currentDrift;
                 outCorrectedCenter[0] = this.barbellCenter3D[0] + driftX * pullFactor;
-                outCorrectedCenter[1] = rawBodyCenter[1]; // Y軸交由動力學引擎處理
+                outCorrectedCenter[1] = rawBodyCenter[1]; // Y軸始終信任平滑後的 AI 點，不被槓片下垂拖累
                 outCorrectedCenter[2] = this.barbellCenter3D[2]; 
             } else {
                 // 誤差在合理範圍內，信任 AI 並微調
