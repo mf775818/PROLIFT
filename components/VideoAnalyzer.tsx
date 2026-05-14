@@ -488,7 +488,21 @@ class OpenCVTracker {
         }
     }
     
-    destroy() { if (this.prevGray) this.prevGray.delete(); if (this.prevPts) this.prevPts.delete(); if (this.clahe) this.clahe.delete(); this.isInitialized = false; }
+    destroy() { 
+        try {
+            if (this.prevGray && !this.prevGray.isDeleted()) this.prevGray.delete(); 
+            if (this.prevPts && !this.prevPts.isDeleted()) this.prevPts.delete(); 
+            if (this.clahe && !this.clahe.isDeleted()) this.clahe.delete(); 
+        } catch (e) {
+            console.warn("OpenCV GC Warning:", e);
+        } finally {
+            // 必須將參照設為 null，切斷 WebAssembly 綁定，讓 JS GC 能夠回收
+            this.prevGray = null;
+            this.prevPts = null;
+            this.clahe = null;
+            this.isInitialized = false; 
+        }
+    }
 }
 
 export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({ 
@@ -946,6 +960,12 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         throw new Error("Invalid video duration");
     }
     
+    // 🐒C++++ FIX 1: 徹底清除 MediaPipe 的時序追蹤記憶 (LSTM/Kalman)
+    // 防止上一次分析的結尾動作，污染這一次分析的開頭
+    if (typeof model.reset === 'function') {
+        await model.reset();
+    }
+    
     // 🐒C++++ INDUSTRIAL OPTIMIZATION FOR DESKTOP SPEED
     // 1. 回滾 Step 到嚴格的 0.033 (30fps)。不要用 15fps，這會導致兩幀之間物理位移過大，使光流法直接崩潰。
     // 2. 效率優化核心：降低 MediaPipe 解析度。既然有光流法算 ROI，MediaPipe 只需大略追蹤身體即可。
@@ -987,8 +1007,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
            console.warn("vid.currentTime assignment failed: ", e);
            handler();
        }
-       // Fallback for seek timeout - essential for mobile stability
-       setTimeout(() => { if (!resolved) { handler(); } }, 2000);
+       // 🐒C++++ FIX 3: Timeout 發生時，必須徹底拔除 Listener，避免記憶體與事件洩漏
+       setTimeout(() => { 
+           if (!resolved) { 
+               vid.removeEventListener('seeked', handler); // <== 這是解決「越來越慢」的關鍵
+               handler(); 
+           } 
+       }, 2000);
     });
 
     const yieldToMain = () => new Promise<void>(resolve => {
@@ -1114,6 +1139,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         }
     } finally {
         cvTracker.destroy();
+        
+        // 🐒C++++ FIX 4: 切斷舊的 callback 參照，防止 React 元件卸載引發 Memory Leak
+        frameResolve = null;
+        // 將 onResults 指向空函數以清空參照 (MediaPipe 的安全釋放機制)
+        if (model && typeof model.onResults === 'function') {
+            model.onResults(() => {}); 
+        }
     }
     
     if (isAnalyzingRef.current) {
