@@ -670,7 +670,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 itemStyle={{ fontSize: '11px' }} 
                 cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
-              <ReferenceLine yAxisId="left" x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5 }} />
+              <ReferenceLine yAxisId="left" x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
               <ReferenceLine yAxisId="left" x={currentTime - startTimeVal} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                   <>

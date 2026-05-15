@@ -1,6 +1,7 @@
 
 import React, { useEffect, useRef, useState, useCallback, useLayoutEffect } from 'react';
 import { LiftMetrics, PoseResult, AnalysisState, Keypoint } from '../types';
+import { PerspectiveMath } from '../src/lib/hpc/PerspectiveMath';
 import { TrackingBuffer } from '../src/lib/hpc/TrackingBuffer';
 import { CalibrationEngineHPC } from '../src/lib/hpc/CalibrationEngineHPC';
 import { DepthCalibratorHPC } from '../src/lib/hpc/DepthCalibratorHPC';
@@ -558,11 +559,48 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const [progress, setProgress] = useState(0);
   
   const [isSelectingROI, setIsSelectingROI] = useState(false);
+  const [isSelectingDLT, setIsSelectingDLT] = useState(false);
+  const [isDltConfirmed, setIsDltConfirmed] = useState(false);
+  const isDltConfirmedRef = useRef(false);
+  const [dltPoints, setDltPoints] = useState<{x: number, y: number}[]>([]);
+  const dltPointsRef = useRef<{x: number, y: number}[]>([]);
+  const [hMatrix, setHMatrix] = useState<Float64Array>(new Float64Array([1,0,0, 0,1,0, 0,0,1]));
+  const hMatrixRef = useRef<Float64Array>(new Float64Array([1,0,0, 0,1,0, 0,0,1]));
+  const [invHMatrix, setInvHMatrix] = useState<Float64Array | null>(null);
+  const invHMatrixRef = useRef<Float64Array | null>(null);
+
+  useEffect(() => {
+    isDltConfirmedRef.current = isDltConfirmed;
+    hMatrixRef.current = hMatrix;
+    invHMatrixRef.current = invHMatrix;
+    dltPointsRef.current = dltPoints;
+  }, [isDltConfirmed, hMatrix, invHMatrix, dltPoints]);
+
+  const [draggingDltIndex, setDraggingDltIndex] = useState<number | null>(null);
   const [normalizedROI, setNormalizedROI] = useState<NormalizedRect | null>(null);
   const [dragStart, setDragStart] = useState<{x: number, y: number} | null>(null);
   const [videoLayout, setVideoLayout] = useState<VideoLayout>({ width: 0, height: 0, top: 0, left: 0 });
+  
+  // 工業級點擊去抖震 (防止移動端連點)
+  const lastTouchTimeRef = useRef<number>(0);
+  
+  // --- FOOL-PROOF: REDRAW ON RESIZE ---
+  useEffect(() => {
+    if (analysisState === AnalysisState.COMPLETE && fullLiftHistory.current.length > 0) {
+      lastRenderedIndexRef.current = -1; // Reset persistent path index
+      const metrics = fullLiftHistory.current;
+      const t = videoRef.current?.currentTime || 0;
+      
+      // Find current point to redraw
+      let closestIdx = 0;
+      for (let i = 0; i < metrics.length; i++) {
+        if (parseFloat(metrics[i].time) <= t) closestIdx = i;
+        else break;
+      }
+      drawOverlay(metrics[closestIdx], closestIdx);
+    }
+  }, [videoLayout, analysisState]);
 
-  // --- NEW: Playback Control States ---
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [isMuted, setIsMuted] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -876,13 +914,64 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   };
 
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
-      if (!isSelectingROI || !videoRef.current || videoLayout.width === 0) return;
+      // 防止移動端連續點擊 (Debounce)
+      const now = Date.now();
+      if (now - lastTouchTimeRef.current < 300) {
+          // 如果是剛發生的 touch 事件引發的 mouseDown，或者手速過快，直接攔截
+          return;
+      }
+      if ('touches' in e) {
+          lastTouchTimeRef.current = now;
+      }
+
       const coords = getCoordinates(e);
+
+      // 如果處於 DLT 模式，紀錄 4 點
+      if (isSelectingDLT) {
+          if (dltPoints.length === 4) {
+              // 已經有4點，檢查是否點擊在任何一個點附近以進行拖曳
+              let foundIdx = -1;
+              const threshold = 20; // pixels
+              for (let i = 0; i < 4; i++) {
+                  const px = dltPoints[i].x * videoLayout.width;
+                  const py = dltPoints[i].y * videoLayout.height;
+                  const ex = coords.x * videoLayout.width;
+                  const ey = coords.y * videoLayout.height;
+                  const dist = Math.sqrt(Math.pow(px - ex, 2) + Math.pow(py - ey, 2));
+                  if (dist < threshold) {
+                      foundIdx = i;
+                      break;
+                  }
+              }
+
+              if (foundIdx !== -1) {
+                  setDraggingDltIndex(foundIdx);
+              }
+              return;
+          }
+
+          const newPts = [...dltPoints, coords];
+          setDltPoints(newPts);
+          return;
+      }
+
+      // 原本的 ROI 邏輯
+      if (!isSelectingROI || !videoRef.current || videoLayout.width === 0) return;
       setDragStart(coords); 
       setNormalizedROI({ x: coords.x, y: coords.y, width: 0, height: 0 });
   };
 
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
+      if (isSelectingDLT && draggingDltIndex !== null) {
+          const coords = getCoordinates(e);
+          setDltPoints(prev => {
+              const newPts = [...prev];
+              newPts[draggingDltIndex] = coords;
+              return newPts;
+          });
+          return;
+      }
+
       if (!dragStart || !isSelectingROI) return;
       const coords = getCoordinates(e);
       
@@ -908,7 +997,12 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       setNormalizedROI({ x: newX, y: newY, width: newWidth, height: newHeight });
   };
 
-  const handlePointerUp = () => setDragStart(null);
+  const handlePointerUp = () => {
+      if (isSelectingDLT && draggingDltIndex !== null) {
+          setDraggingDltIndex(null);
+      }
+      setDragStart(null);
+  };
 
   const toggleROISelection = () => {
       if (isSelectingROI) {
@@ -1236,24 +1330,136 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const trackingBuffer = new TrackingBuffer(n);
     const calibration = new CalibrationEngineHPC();
     const depthCalibrator = new DepthCalibratorHPC();
+
+    // === 🐒C++++ 插入：DLT 無因次透視矩陣計算 ===
+    let hMatrix = new Float64Array([1,0,0, 0,1,0, 0,0,1]); // 預設單位矩陣
+    if (isDltConfirmed && dltPoints.length === 4) {
+        // 來源點：使用者點擊的 4 個像素坐標 (轉為真實影片像素)
+        const srcPts = [
+            dltPoints[0].x * canvasW, dltPoints[0].y * canvasH,
+            dltPoints[1].x * canvasW, dltPoints[1].y * canvasH,
+            dltPoints[2].x * canvasW, dltPoints[2].y * canvasH,
+            dltPoints[3].x * canvasW, dltPoints[3].y * canvasH
+        ];
+        
+        // 工業級 DLT 矢狀面校正：估算 Bounding Box 以維持像素比例的物理意義
+        // 這能確保正交化後的空間尺度仍然接近真實畫面的 pixels，利於 DepthCalibrator 進行校正
+        const d = (x1: number, y1: number, x2: number, y2: number) => Math.hypot(x2 - x1, y2 - y1);
+        const wTop = d(srcPts[0], srcPts[1], srcPts[2], srcPts[3]);
+        const wBtm = d(srcPts[6], srcPts[7], srcPts[4], srcPts[5]);
+        const hLeft = d(srcPts[0], srcPts[1], srcPts[6], srcPts[7]);
+        const hRight = d(srcPts[2], srcPts[3], srcPts[4], srcPts[5]);
+        let w = (wTop + wBtm) / 2;
+        const h = (hLeft + hRight) / 2;
+
+        // 我們將座標系統的左上角定為 bbox 的左上，以避免計算出現負值
+        const minX = Math.min(srcPts[0], srcPts[2], srcPts[4], srcPts[6]);
+        const minY = Math.min(srcPts[1], srcPts[3], srcPts[5], srcPts[7]);
+
+        let dstPts = [
+            minX, minY,
+            minX + w, minY,
+            minX + w, minY + h,
+            minX, minY + h
+        ];
+        
+        let success = PerspectiveMath.calculateHomography(hMatrix, srcPts, dstPts);
+
+        // --- 工業級 DLT 仿射比例還原補償 (Anisotropic Aspect Ratio Compensation) ---
+        // 解決 45度角拍攝時，就算校正了平面，X軸 (深度方向) 依然維持原像素壓縮而導致位移低估的問題。
+        // 方法論：槓鈴片在現實中是完美的圓 (長寬比 1:1)。
+        // 我們將使用者框選的槓鈴片 ROI 透視到 DLT 空間，再強迫它的物理長寬相等，從而倒推出 X 軸真實的放大倍率！
+        if (success && normalizedROI && normalizedROI.width > 0 && normalizedROI.height > 0) {
+            const centerX = normalizedROI.x + normalizedROI.width / 2;
+            const centerY = normalizedROI.y + normalizedROI.height / 2;
+            
+            // 定義橢圓的上下左右四個邊界點
+            const topPt = new Float64Array([centerX * canvasW, normalizedROI.y * canvasH, 1]);
+            const btmPt = new Float64Array([centerX * canvasW, (normalizedROI.y + normalizedROI.height) * canvasH, 1]);
+            const leftPt = new Float64Array([normalizedROI.x * canvasW, centerY * canvasH, 1]);
+            const rightPt = new Float64Array([(normalizedROI.x + normalizedROI.width) * canvasW, centerY * canvasH, 1]);
+
+            const ct = new Float64Array(3); const cb = new Float64Array(3);
+            const cl = new Float64Array(3); const cr = new Float64Array(3);
+            
+            PerspectiveMath.multiplyMat3Vec3(ct, hMatrix, topPt);
+            PerspectiveMath.multiplyMat3Vec3(cb, hMatrix, btmPt);
+            PerspectiveMath.multiplyMat3Vec3(cl, hMatrix, leftPt);
+            PerspectiveMath.multiplyMat3Vec3(cr, hMatrix, rightPt);
+
+            const plateDLTHeight = Math.abs((cb[1] / cb[2]) - (ct[1] / ct[2]));
+            const plateDLTWidth = Math.abs((cr[0] / cr[2]) - (cl[0] / cl[2]));
+
+            if (plateDLTWidth > 0 && plateDLTHeight > 0) {
+                // 物理真值比例 (Aspect Ratio) 補償係數
+                const arRatio = plateDLTHeight / plateDLTWidth;
+                
+                // 動態延展或壓縮目標平面的寬度，以匹配相機變形
+                w = w * arRatio;
+                
+                // 重新計算真正等距、等向的 Homography 矩陣
+                dstPts = [
+                    minX, minY,
+                    minX + w, minY,
+                    minX + w, minY + h,
+                    minX, minY + h
+                ];
+                success = PerspectiveMath.calculateHomography(hMatrix, srcPts, dstPts);
+            }
+        }
+
+        if (!success) {
+            console.warn("DLT Matrix singular, falling back to 2D");
+            hMatrix = new Float64Array([1,0,0, 0,1,0, 0,0,1]);
+        }
+    }
+    
+    calibration.updateHomography(Array.from(hMatrix));
     
     // 計算初始幀的像素尺寸以餵給雙錨定系統
     let platePixelHeight = 0;
     if (normalizedROI && normalizedROI.height > 0) {
-        platePixelHeight = normalizedROI.height * canvasH;
+        if (isDltConfirmed && dltPoints.length === 4) {
+             const topPt = new Float64Array([normalizedROI.x * canvasW, normalizedROI.y * canvasH, 1]);
+             const btmPt = new Float64Array([normalizedROI.x * canvasW, (normalizedROI.y + normalizedROI.height) * canvasH, 1]);
+             
+             const correctedTop = new Float64Array(3);
+             const correctedBtm = new Float64Array(3);
+             PerspectiveMath.multiplyMat3Vec3(correctedTop, hMatrix, topPt);
+             PerspectiveMath.multiplyMat3Vec3(correctedBtm, hMatrix, btmPt);
+             
+             const hTopY = correctedTop[1] / correctedTop[2];
+             const hBtmY = correctedBtm[1] / correctedBtm[2];
+             platePixelHeight = Math.abs(hBtmY - hTopY);
+        } else {
+             platePixelHeight = normalizedROI.height * canvasH;
+        }
     }
     
     let bodyPixelHeight = 0;
     if (raw.length > 0) {
         const frame0 = raw[0];
-        // 頭頂通常用 nose(0) 或 eye(1,2,3,4,5,6), 這裡取 nose
-        // 腳底取左右腳跟的平均 (29, 30) 或腳趾 (31, 32)
-        const top = frame0.landmarks[0]?.y;
-        const heelL = frame0.landmarks[29]?.y;
-        const heelR = frame0.landmarks[30]?.y;
-        if (top !== undefined && heelL !== undefined && heelR !== undefined) {
-             const bottom = Math.max(heelL, heelR);
-             bodyPixelHeight = (bottom - top) * canvasH;
+        // 頭頂通常用 nose(0), 腳底取左右腳跟的平均
+        const topLm = frame0.landmarks[0];
+        const heelL = frame0.landmarks[29];
+        const heelR = frame0.landmarks[30];
+        
+        if (topLm && heelL && heelR) {
+             let topY = topLm.y * canvasH;
+             let btmY = Math.max(heelL.y, heelR.y) * canvasH;
+             if (isDltConfirmed && dltPoints.length === 4) {
+                 const tVec = new Float64Array([topLm.x * canvasW, topY, 1]);
+                 const bVec = new Float64Array([topLm.x * canvasW, btmY, 1]);
+                 
+                 const ct = new Float64Array(3);
+                 const cb = new Float64Array(3);
+                 PerspectiveMath.multiplyMat3Vec3(ct, hMatrix, tVec);
+                 PerspectiveMath.multiplyMat3Vec3(cb, hMatrix, bVec);
+                 
+                 topY = ct[1] / ct[2];
+                 btmY = cb[1] / cb[2];
+             }
+             bodyPixelHeight = Math.abs(btmY - topY);
         }
     }
 
@@ -1288,26 +1494,22 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         );
     }
     
-    // 利用 HPC 執行整批座標轉換 (像素轉真實物理空間 mm)
-    // 我們建立一個長度為 n 的 boolean array, 表示這些都是槓鈴節點
+    // == 1. 商業級 DLT 矢狀面投影校正 (Sagittal Plane Rectification) ==
+    // 對齊運動平面以消除鏡頭非正交視角與廣角變形。
+    // 這會使用剛才根據 Bounding Box 算出的保真 Homography 矩陣進行反變換。
+    if (isDltConfirmed) {
+        calibration.applyPerspectiveTransform(trackingBuffer);
+    }
+
+    // == 2. 利用 HPC 執行整批座標轉換 (攝影機 2D 像素 -> 真實物理空間 mm) ==
     const isBarbellArray = new Array(n).fill(true);
     depthCalibrator.transformToPhysicalSpace(trackingBuffer.x, trackingBuffer.y, trackingBuffer.head, isBarbellArray);
 
-    // 我們將 mm 轉回 Meters，以確保後方物理引擎的公式無縫接軌 (Power, Velocity 單位 = m/s)
+    // == 3. 將 mm 轉回 Meters，以確保後方物理引擎的公式無縫接軌 ==
     for (let i = 0; i < trackingBuffer.head; i++) {
         trackingBuffer.x[i] /= 1000.0;
         trackingBuffer.y[i] /= 1000.0;
     }
-
-    // 將 1:1 的單位矩陣傳給舊有的 perspective engine (因為我們已經計算過比例與反轉了)
-    calibration.updateHomography([
-        1, 0, 0,
-        0, 1, 0,
-        0, 0, 1
-    ]);
-
-    // 批次 3D 透視校正 (O(n) Zero-Allocation)
-    calibration.applyPerspectiveTransform(trackingBuffer);
 
     const outKinetics = new Float32Array(n * 4);
     const outKnee = new Float32Array(n);
@@ -1530,15 +1732,47 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
       const zx = startXRef.current * w; const zy = startYRef.current * h;
       
-      // 畫出對應 LiftChart 中綠色虛線 (0,0 原點) 
+      // 畫出對應 LiftChart 中虛線 (0,0 原點) 
       overlayCtx.setLineDash([4, 4]);
-      overlayCtx.strokeStyle = 'rgba(34, 197, 94, 0.6)'; // #22c55e (Green)
+      overlayCtx.strokeStyle = 'rgba(34, 197, 94, 0.6)';
       overlayCtx.lineWidth = 2;
       
-      // 垂直參考線 (X軸原點)
-      overlayCtx.beginPath(); overlayCtx.moveTo(zx, 0); overlayCtx.lineTo(zx, h); overlayCtx.stroke();
+      const currentIsDltConfirmed = isDltConfirmedRef.current;
+      const currentHMatrix = hMatrixRef.current;
+      const currentInvHMatrix = invHMatrixRef.current;
+
+      if (currentIsDltConfirmed && currentInvHMatrix && currentHMatrix) {
+          const vW = processingVideoRef.current?.videoWidth || w;
+          const vH = processingVideoRef.current?.videoHeight || h;
+          const zx_v = zx * vW / w; 
+          const zy_v = zy * vH / h;
+          const virtStart = new Float64Array(3);
+          PerspectiveMath.multiplyMat3Vec3(virtStart, currentHMatrix, new Float64Array([zx_v, zy_v, 1]));
+          const vx = virtStart[0] / virtStart[2];
+          const vy = virtStart[1] / virtStart[2];
+
+          const proj = (px: number, py: number) => {
+              const out = new Float64Array(3);
+              PerspectiveMath.multiplyMat3Vec3(out, currentInvHMatrix, new Float64Array([px, py, 1]));
+              return { x: (out[0] / out[2]) / vW * w, y: (out[1] / out[2]) / vH * h };
+          };
+
+          // Y-axis (垂直於 DLT 平面)
+          const py1 = proj(vx, Math.max(-10000, vy - 5000));
+          const py2 = proj(vx, Math.min(10000, vy + 5000));
+          overlayCtx.beginPath(); overlayCtx.moveTo(py1.x, py1.y); overlayCtx.lineTo(py2.x, py2.y); overlayCtx.stroke();
+
+          // X-axis (平行於 DLT 平面)
+          const px1 = proj(Math.max(-10000, vx - 5000), vy);
+          const px2 = proj(Math.min(10000, vx + 5000), vy);
+          overlayCtx.beginPath(); overlayCtx.moveTo(px1.x, px1.y); overlayCtx.lineTo(px2.x, px2.y); overlayCtx.stroke();
+      } else {
+          // 垂直與水平參考線
+          overlayCtx.beginPath(); overlayCtx.moveTo(zx, 0); overlayCtx.lineTo(zx, h); overlayCtx.stroke();
+          overlayCtx.beginPath(); overlayCtx.moveTo(0, zy); overlayCtx.lineTo(w, zy); overlayCtx.stroke();
+      }
       
-      // Reset line dash to prevent subsequent drawings (like the skeleton in the next frame) from being dashed
+      // Reset line dash
       overlayCtx.setLineDash([]);
       
       // 起點標示 (原點)
@@ -1564,9 +1798,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       }
 
       const lastIdx = lastRenderedIndexRef.current;
+      const delta = targetIdx - lastIdx;
 
       if (commands.length > 1 && targetIdx !== lastIdx) {
-          const delta = targetIdx - lastIdx;
           pathCtx.lineWidth = 4; pathCtx.lineCap = 'round'; pathCtx.lineJoin = 'round';
 
           if (delta > 0 && delta <= 30 && lastIdx >= 0) {
@@ -1627,6 +1861,77 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       }
 
       const cx = metric.x * w; const cy = metric.y * h;
+      
+      // --- DLT Grid Background (FOOL-PROOF PERSISTENT LAYER) ---
+      const currentDltPoints = dltPointsRef.current;
+      if (currentIsDltConfirmed && currentInvHMatrix) {
+          // If we are doing a full redraw, ensure the grid is there
+          if (delta < -2 || delta > 30 || lastIdx === -1) {
+              pathCtx.save();
+              const divs = 10;
+              const vW = processingVideoRef.current?.videoWidth || w;
+              const vH = processingVideoRef.current?.videoHeight || h;
+              
+              if (currentDltPoints.length === 4) {
+                  const srcPts = [
+                      currentDltPoints[0].x * vW, currentDltPoints[0].y * vH,
+                      currentDltPoints[1].x * vW, currentDltPoints[1].y * vH,
+                      currentDltPoints[2].x * vW, currentDltPoints[2].y * vH,
+                      currentDltPoints[3].x * vW, currentDltPoints[3].y * vH
+                  ];
+                  const dist = (x1: number, y1: number, x2: number, y2: number) => Math.hypot(x2 - x1, y2 - y1);
+                  const virtW = (dist(srcPts[0], srcPts[1], srcPts[2], srcPts[3]) + dist(srcPts[6], srcPts[7], srcPts[4], srcPts[5])) / 2;
+                  const virtH = (dist(srcPts[0], srcPts[1], srcPts[6], srcPts[7]) + dist(srcPts[2], srcPts[3], srcPts[4], srcPts[5])) / 2;
+                  const minX = Math.min(srcPts[0], srcPts[2], srcPts[4], srcPts[6]);
+                  const minY = Math.min(srcPts[1], srcPts[3], srcPts[5], srcPts[7]);
+
+                  const proj = (vx: number, vy: number) => {
+                      const out = new Float64Array(3);
+                      PerspectiveMath.multiplyMat3Vec3(out, currentInvHMatrix, new Float64Array([vx, vy, 1]));
+                      return { x: (out[0] / out[2]) / vW * w, y: (out[1] / out[2]) / vH * h };
+                  };
+
+                  pathCtx.strokeStyle = '#00e5ff';
+                  pathCtx.setLineDash([]);
+                  
+                  // Draw outer bounding box perfectly matching the 4 points
+                  pathCtx.globalAlpha = 0.8;
+                  pathCtx.lineWidth = 2;
+                  const pTL = proj(minX, minY); const pTR = proj(minX + virtW, minY);
+                  const pBR = proj(minX + virtW, minY + virtH); const pBL = proj(minX, minY + virtH);
+                  pathCtx.beginPath();
+                  pathCtx.moveTo(pTL.x, pTL.y); pathCtx.lineTo(pTR.x, pTR.y);
+                  pathCtx.lineTo(pBR.x, pBR.y); pathCtx.lineTo(pBL.x, pBL.y);
+                  pathCtx.closePath();
+                  pathCtx.stroke();
+
+                  // Draw internal Y-axis and X-axis lines (dashed)
+                  pathCtx.globalAlpha = 0.5;
+                  pathCtx.lineWidth = 1;
+                  pathCtx.setLineDash([4, 4]); // Dashed lines
+                  
+                  // Horizontal (Y axis divisions)
+                  for (let i = 1; i < divs; i++) {
+                      const stepY = minY + i * (virtH / divs);
+                      const p1h = proj(minX, stepY); 
+                      const p2h = proj(minX + virtW, stepY);
+                      pathCtx.beginPath(); pathCtx.moveTo(p1h.x, p1h.y); pathCtx.lineTo(p2h.x, p2h.y); pathCtx.stroke();
+                  }
+                  
+                  // Vertical (X axis divisions)
+                  for (let i = 1; i < divs; i++) {
+                      const stepX = minX + i * (virtW / divs);
+                      const p1v = proj(stepX, minY); 
+                      const p2v = proj(stepX, minY + virtH);
+                      pathCtx.beginPath(); pathCtx.moveTo(p1v.x, p1v.y); pathCtx.lineTo(p2v.x, p2v.y); pathCtx.stroke();
+                  }
+                  
+                  pathCtx.setLineDash([]); // Reset to solid lines for subsequent drawing
+              }
+              pathCtx.restore();
+          }
+      }
+
       overlayCtx.beginPath(); overlayCtx.arc(cx, cy, 8, 0, 2*Math.PI); overlayCtx.fillStyle = '#facc15'; overlayCtx.strokeStyle = 'rgba(0,0,0,0.5)'; overlayCtx.lineWidth = 2; overlayCtx.fill(); overlayCtx.stroke();
       const devCm = (metric.x - startXRef.current) * 200; const devX = cx + 20; const devY = cy;
       overlayCtx.save(); overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.7)'; overlayCtx.roundRect(devX - 4, devY - 10, 60, 20, 4); overlayCtx.fill(); overlayCtx.fillStyle = devCm > 0 ? '#ef4444' : '#10b981'; overlayCtx.font = 'bold 12px monospace'; overlayCtx.fillText(`${devCm > 0 ? '+' : ''}${devCm.toFixed(1)}cm`, devX, devY + 4); overlayCtx.restore();
@@ -1639,7 +1944,14 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     return () => resizeObserver.disconnect();
   }, [videoUrl, updateVideoLayout]);
 
-  const shouldShowROI = (isSelectingROI || (normalizedROI && analysisState !== AnalysisState.COMPLETE));
+  const shouldShowInteractionArea = (isSelectingROI || isSelectingDLT || (normalizedROI && analysisState !== AnalysisState.COMPLETE));
+  
+  let interactionCursorClass = 'pointer-events-none';
+  if (isSelectingROI || (isSelectingDLT && dltPoints.length < 4)) {
+      interactionCursorClass = 'cursor-crosshair';
+  } else if (isSelectingDLT && dltPoints.length === 4) {
+      interactionCursorClass = draggingDltIndex !== null ? 'cursor-grabbing' : 'auto';
+  }
   
   const handleInternalUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
       if (e.target.files && e.target.files[0] && onFileSelect) {
@@ -1786,13 +2098,132 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           <canvas ref={pathCanvasRef} className="absolute pointer-events-none z-10" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, transform: 'translateZ(0)', willChange: 'transform' }} width={videoLayout.width} height={videoLayout.height} />
           <canvas ref={canvasRef} className="absolute pointer-events-none z-20" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, transform: 'translateZ(0)', willChange: 'transform' }} width={videoLayout.width} height={videoLayout.height} />
 
-          {shouldShowROI && (
+          {shouldShowInteractionArea && (
               <div 
-                 className={`absolute z-10 ${isSelectingROI ? 'cursor-crosshair' : 'pointer-events-none'}`}
-                 style={{ width: videoLayout.width, height: videoLayout.height, top: videoLayout.top, left: videoLayout.left, }}
-                 onMouseDown={handlePointerDown} onMouseMove={handlePointerMove} onMouseUp={handlePointerUp}
+                 className={`absolute z-10 ${interactionCursorClass}`}
+                 style={{ width: videoLayout.width, height: videoLayout.height, top: videoLayout.top, left: videoLayout.left, pointerEvents: (isSelectingROI || isSelectingDLT) ? 'auto' : 'none' }}
+                 onMouseDown={handlePointerDown} onMouseMove={handlePointerMove} onMouseUp={handlePointerUp} onMouseLeave={handlePointerUp}
                  onTouchStart={handlePointerDown} onTouchMove={handlePointerMove} onTouchEnd={handlePointerUp}
               >
+                  {/* --- 在 Canvas 上方繪製 DLT 網格視覺回饋 --- */}
+                  {(dltPoints.length > 0) && (
+                      <svg className={`absolute top-0 left-0 w-full h-full pointer-events-none z-15 ${isSelectingDLT && draggingDltIndex !== null ? 'cursor-grabbing' : ''}`} style={{ width: '100%', height: '100%' }}>
+                          {/* 畫點之間的虛線 (建立視覺連結) */}
+                          {dltPoints.map((p, i) => {
+                              if (i === 0) return null;
+                              const prev = dltPoints[i-1];
+                              return (
+                                  <line 
+                                      key={`line-${i}`}
+                                      x1={prev.x * videoLayout.width} y1={prev.y * videoLayout.height}
+                                      x2={p.x * videoLayout.width} y2={p.y * videoLayout.height}
+                                      stroke={isDltConfirmed ? "#00e5ff" : "#f59e0b"}
+                                      strokeWidth="1.5"
+                                      strokeDasharray="4 4"
+                                      opacity="0.6"
+                                  />
+                              );
+                          })}
+                          {/* 如果有 4 點，畫最後一條回連線 */}
+                          {dltPoints.length === 4 && (
+                              <line 
+                                  x1={dltPoints[3].x * videoLayout.width} y1={dltPoints[3].y * videoLayout.height}
+                                  x2={dltPoints[0].x * videoLayout.width} y2={dltPoints[0].y * videoLayout.height}
+                                  stroke={isDltConfirmed ? "#00e5ff" : "#f59e0b"}
+                                  strokeWidth="1.5"
+                                  strokeDasharray="4 4"
+                                  opacity="0.6"
+                              />
+                          )}
+
+                          {dltPoints.length === 4 && (
+                              <polygon 
+                                  points={dltPoints.map(p => `${p.x * videoLayout.width},${p.y * videoLayout.height}`).join(' ')} 
+                                  fill={isDltConfirmed ? "rgba(0, 229, 255, 0.15)" : "rgba(245, 158, 11, 0.15)"}
+                                  stroke={isDltConfirmed ? "#00e5ff" : "#f59e0b"}
+                                  strokeWidth="2"
+                                  strokeDasharray={isDltConfirmed ? "none" : "4 4"}
+                              />
+                          )}
+
+                          {/* --- 3D Sagittal Grid Projection --- */}
+                          {isDltConfirmed && invHMatrix && (
+                              <g>
+                                  {(() => {
+                                      const divs = 10;
+                                      const res = [];
+                                      const vW = processingVideoRef.current.videoWidth || videoLayout.width;
+                                      const vH = processingVideoRef.current.videoHeight || videoLayout.height;
+
+                                      if (dltPoints.length === 4) {
+                                          const srcPts = [
+                                              dltPoints[0].x * vW, dltPoints[0].y * vH,
+                                              dltPoints[1].x * vW, dltPoints[1].y * vH,
+                                              dltPoints[2].x * vW, dltPoints[2].y * vH,
+                                              dltPoints[3].x * vW, dltPoints[3].y * vH
+                                          ];
+                                          const dist = (x1: number, y1: number, x2: number, y2: number) => Math.hypot(x2 - x1, y2 - y1);
+                                          const virtW = (dist(srcPts[0], srcPts[1], srcPts[2], srcPts[3]) + dist(srcPts[6], srcPts[7], srcPts[4], srcPts[5])) / 2;
+                                          const virtH = (dist(srcPts[0], srcPts[1], srcPts[6], srcPts[7]) + dist(srcPts[2], srcPts[3], srcPts[4], srcPts[5])) / 2;
+                                          const minX = Math.min(srcPts[0], srcPts[2], srcPts[4], srcPts[6]);
+                                          const minY = Math.min(srcPts[1], srcPts[3], srcPts[5], srcPts[7]);
+
+                                          const project = (vx: number, vy: number) => {
+                                              const out = new Float64Array(3);
+                                              PerspectiveMath.multiplyMat3Vec3(out, invHMatrix!, new Float64Array([vx, vy, 1]));
+                                              return {
+                                                  x: (out[0] / out[2]) / vW * videoLayout.width,
+                                                  y: (out[1] / out[2]) / vH * videoLayout.height
+                                              };
+                                          };
+                                          
+                                          // 外框 (Outer bounding frame)
+                                          const pTL = project(minX, minY); const pTR = project(minX + virtW, minY);
+                                          const pBR = project(minX + virtW, minY + virtH); const pBL = project(minX, minY + virtH);
+                                          res.push(
+                                              <polygon 
+                                                  key="grid-frame" 
+                                                  points={`${pTL.x},${pTL.y} ${pTR.x},${pTR.y} ${pBR.x},${pBR.y} ${pBL.x},${pBL.y}`}
+                                                  fill="none" stroke="#00e5ff" strokeWidth="2" opacity="0.8"
+                                              />
+                                          );
+
+                                          // 水平與垂直網格線 (Horizontal & Vertical internal divisions)
+                                          for (let i = 1; i < divs; i++) {
+                                              // 水平線 (Horizontal)
+                                              const stepY = minY + i * (virtH / divs);
+                                              const p1h = project(minX, stepY); 
+                                              const p2h = project(minX + virtW, stepY);
+                                              res.push(<line key={`grid-h-${i}`} x1={p1h.x} y1={p1h.y} x2={p2h.x} y2={p2h.y} stroke="#00e5ff" strokeWidth="1" strokeDasharray="4 4" opacity="0.5" />);
+                                              
+                                              // 垂直線 (Vertical)
+                                              const stepX = minX + i * (virtW / divs);
+                                              const p1v = project(stepX, minY); 
+                                              const p2v = project(stepX, minY + virtH);
+                                              res.push(<line key={`grid-v-${i}`} x1={p1v.x} y1={p1v.y} x2={p2v.x} y2={p2v.y} stroke="#00e5ff" strokeWidth="1" strokeDasharray="4 4" opacity="0.5" />);
+                                          }
+                                      }
+                                      return res;
+                                  })()}
+                              </g>
+                          )}
+                          {dltPoints.map((p, i) => (
+                              <g key={i}>
+                                  <circle cx={p.x * videoLayout.width} cy={p.y * videoLayout.height} r={isSelectingDLT ? "8" : "5"} fill={isDltConfirmed ? "#00e5ff" : "#f59e0b"} className={isSelectingDLT && dltPoints.length < 4 && i === dltPoints.length - 1 ? "animate-pulse" : ""} />
+                                  {isSelectingDLT && dltPoints.length === 4 && (
+                                      <circle cx={p.x * videoLayout.width} cy={p.y * videoLayout.height} r="15" fill="transparent" stroke={isDltConfirmed ? "#00e5ff" : "#f59e0b"} strokeWidth="1" strokeDasharray="2 2" className="animate-spin-slow opacity-50" />
+                                  )}
+                                  <text x={p.x * videoLayout.width + 12} y={p.y * videoLayout.height - 12} fill="white" fontSize="13" fontWeight="bold" style={{ textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
+                                      P{i+1}
+                                  </text>
+                                  <text x={p.x * videoLayout.width + 12} y={p.y * videoLayout.height + 4} fill={isDltConfirmed ? "#00e5ff" : "#fcd34d"} fontSize="9" fontWeight="bold" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>
+                                      {i === 0 ? '前上 (Front-Top)' : i === 1 ? '後上 (Back-Top)' : i === 2 ? '後下 (Back-Bottom)' : '前下 (Front-Bottom)'}
+                                  </text>
+                              </g>
+                          ))}
+                      </svg>
+                  )}
+
                   {normalizedROI && (
                       <div className="absolute border-2 border-yellow-500 bg-yellow-500/20" style={{ left: `${normalizedROI.x * 100}%`, top: `${normalizedROI.y * 100}%`, width: `${normalizedROI.width * 100}%`, height: `${normalizedROI.height * 100}%` }}>
                           {isSelectingROI && (
@@ -1810,7 +2241,116 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           {/* HEADS-UP ROI CONTROLS (Top Right) */}
           {analysisState === AnalysisState.IDLE && (
               <div className="absolute top-4 right-4 z-20 flex flex-col gap-2">
-                  {!isSelectingROI ? (
+                  
+                  {/* --- DLT 4點校正按鈕 --- */}
+                  {!isSelectingDLT && !isSelectingROI && (
+                     <button 
+                        onClick={() => {
+                            setIsSelectingDLT(true);
+                            // setIsDltConfirmed remains true if we want to edit, or it's false. No need to reset here, just enter edit mode.
+                            // But usually, edit mode means it's not confirmed yet until they click confirm.
+                            // Actually, keeping dltPoints and letting them edit is good.
+                            setIsDltConfirmed(false);
+                        }}
+                        className={`bg-zinc-900/90 text-white backdrop-blur-md px-4 py-2 rounded-lg text-xs font-bold tracking-wider border shadow-xl hover:bg-zinc-800 transition-all flex items-center gap-2 ${isDltConfirmed ? 'border-cyan-400 text-cyan-400' : 'border-zinc-700'}`}
+                     >
+                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="3 3 21 3 21 21 3 21 3 3"/><circle cx="3" cy="3" r="2"/><circle cx="21" cy="3" r="2"/><circle cx="21" cy="21" r="2"/><circle cx="3" cy="21" r="2"/></svg>
+                         {isDltConfirmed ? 'SAGITTAL CALIBRATED (EDIT)' : 'SET SAGITTAL PLANE (DLT)'}
+                     </button>
+                  )}
+                  
+                  {/* DLT 狀態提示 */}
+                  {isSelectingDLT && (
+                      <div className="flex flex-col gap-2 animate-in slide-in-from-top-2 fade-in bg-zinc-900/95 border border-zinc-700 p-3 rounded-lg shadow-xl shadow-black/50 w-64 pointer-events-auto">
+                          <div className="text-xs font-bold text-white mb-1 flex items-center justify-between">
+                              <span>矢狀面校正 (SAGITTAL DLT)</span>
+                              <span className="text-zinc-500">{dltPoints.length}/4</span>
+                          </div>
+                          <div className="text-[10px] text-zinc-400 mb-2 leading-tight font-medium">
+                              {dltPoints.length === 0 ? "標記運動平面 (前上角 / Front-Top)" :
+                               dltPoints.length === 1 ? "標記運動平面 (後上角 / Back-Top)" :
+                               dltPoints.length === 2 ? "標記運動平面 (後下角 / Back-Bottom)" :
+                               dltPoints.length === 3 ? "標記運動平面 (前下角 / Front-Bottom)" :
+                               "運動平面 4 點已標記。可拖曳微調或按確認。"}
+                          </div>
+                          
+                          <div className="flex gap-2 w-full mt-1">
+                              <button 
+                                  onClick={() => {
+                                      setIsSelectingDLT(false);
+                                      if (!isDltConfirmed && dltPoints.length < 4) {
+                                          setDltPoints([]); // Reset if aborted halfway
+                                      }
+                                  }} 
+                                  className="flex-1 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 py-2 rounded text-[11px] font-bold transition-colors"
+                              >
+                                  {isDltConfirmed ? 'CANCEL' : 'ABORT'}
+                              </button>
+                              <button 
+                                  onClick={() => {
+                                      setDltPoints([]);
+                                      setIsDltConfirmed(false);
+                                      setInvHMatrix(null);
+                                  }} 
+                                  className="flex-1 bg-red-900/50 hover:bg-red-800/80 text-red-300 py-2 rounded text-[11px] font-bold transition-colors"
+                              >
+                                  CLEAR
+                              </button>
+                              {dltPoints.length === 4 && (
+                              <button 
+                                  onClick={() => {
+                                      setIsDltConfirmed(true);
+                                      setIsSelectingDLT(false);
+                                      
+                                      // Calculate preview matrices immediately
+                                      const vW = processingVideoRef.current.videoWidth || videoLayout.width;
+                                      const vH = processingVideoRef.current.videoHeight || videoLayout.height;
+                                      const srcPts = [
+                                          dltPoints[0].x * vW, dltPoints[0].y * vH,
+                                          dltPoints[1].x * vW, dltPoints[1].y * vH,
+                                          dltPoints[2].x * vW, dltPoints[2].y * vH,
+                                          dltPoints[3].x * vW, dltPoints[3].y * vH
+                                      ];
+                                      
+                                      const d = (x1: number, y1: number, x2: number, y2: number) => Math.hypot(x2 - x1, y2 - y1);
+                                      const wTop = d(srcPts[0], srcPts[1], srcPts[2], srcPts[3]);
+                                      const wBtm = d(srcPts[6], srcPts[7], srcPts[4], srcPts[5]);
+                                      const hLeft = d(srcPts[0], srcPts[1], srcPts[6], srcPts[7]);
+                                      const hRight = d(srcPts[2], srcPts[3], srcPts[4], srcPts[5]);
+                                      const w = (wTop + wBtm) / 2;
+                                      const h = (hLeft + hRight) / 2;
+
+                                      const minX = Math.min(srcPts[0], srcPts[2], srcPts[4], srcPts[6]);
+                                      const minY = Math.min(srcPts[1], srcPts[3], srcPts[5], srcPts[7]);
+
+                                      const dstPts = [
+                                          minX, minY,
+                                          minX + w, minY,
+                                          minX + w, minY + h,
+                                          minX, minY + h
+                                      ];
+
+                                      const hMat = new Float64Array(9);
+                                      const success = PerspectiveMath.calculateHomography(hMat, srcPts, dstPts);
+                                      if (success) {
+                                          setHMatrix(hMat);
+                                          const inv = new Float64Array(9);
+                                          if (PerspectiveMath.invertMat3(inv, hMat)) {
+                                              setInvHMatrix(inv);
+                                          }
+                                      }
+                                  }} 
+                                  className="flex-1 bg-[var(--cyan-main,#00e5ff)] hover:bg-[#00d0e8] text-black py-2 rounded text-[11px] font-extrabold transition-colors shadow-[0_0_15px_rgba(0,229,255,0.4)] shadow-lg active:scale-95 flex items-center justify-center gap-1 tracking-wide"
+                              >
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                  CONFIRM
+                              </button>
+                              )}
+                          </div>
+                      </div>
+                  )}
+
+                  {!isSelectingROI && !isSelectingDLT && (
                      <button 
                         onClick={toggleROISelection}
                         className="bg-zinc-900/90 text-white backdrop-blur-md px-4 py-2 rounded-lg text-xs font-bold tracking-wider border border-zinc-700 shadow-xl hover:bg-zinc-800 transition-all flex items-center gap-2"
@@ -1818,7 +2358,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
                          SET TARGET
                      </button>
-                  ) : (
+                  )}
+                  {isSelectingROI && (
                       <div className="flex gap-2 animate-in slide-in-from-top-2 fade-in">
                           <button 
                              onClick={() => setIsSelectingROI(false)}
@@ -1891,6 +2432,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                           setAnalysisState(AnalysisState.IDLE);
                           setNormalizedROI(null);
                           setIsSelectingROI(false);
+                          setIsSelectingDLT(false);
+                          setIsDltConfirmed(false);
+                          setDltPoints([]);
                           setProgress(0);
                           
                           // Clear internal data buffers

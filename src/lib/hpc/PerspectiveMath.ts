@@ -60,4 +60,88 @@ export class PerspectiveMath {
 
         return true;
     }
+
+    /**
+     * Calculates the 3x3 Homography matrix that maps srcPts to dstPts.
+     * @param out Float64Array[9] - Output Homography matrix
+     * @param srcPts Array of 8 numbers - [x1, y1, x2, y2, x3, y3, x4, y4]
+     * @param dstPts Array of 8 numbers - [x1, y1, x2, y2, x3, y3, x4, y4]
+     * @returns boolean - True if successful
+     */
+    public static calculateHomography(out: Float64Array, srcPts: number[], dstPts: number[]): boolean {
+        // Simple 4-point DLT (Direct Linear Transformation) for Homography
+        if (srcPts.length !== 8 || dstPts.length !== 8) return false;
+
+        const A = new Array(8).fill(0).map(() => new Float64Array(8));
+        const B = new Float64Array(8);
+
+        for (let i = 0; i < 4; i++) {
+            const sx = srcPts[i * 2];
+            const sy = srcPts[i * 2 + 1];
+            const dx = dstPts[i * 2];
+            const dy = dstPts[i * 2 + 1];
+
+            A[i * 2][0] = sx;
+            A[i * 2][1] = sy;
+            A[i * 2][2] = 1;
+            A[i * 2][3] = 0;
+            A[i * 2][4] = 0;
+            A[i * 2][5] = 0;
+            A[i * 2][6] = -sx * dx;
+            A[i * 2][7] = -sy * dx;
+            B[i * 2] = dx;
+
+            A[i * 2 + 1][0] = 0;
+            A[i * 2 + 1][1] = 0;
+            A[i * 2 + 1][2] = 0;
+            A[i * 2 + 1][3] = sx;
+            A[i * 2 + 1][4] = sy;
+            A[i * 2 + 1][5] = 1;
+            A[i * 2 + 1][6] = -sx * dy;
+            A[i * 2 + 1][7] = -sy * dy;
+            B[i * 2 + 1] = dy;
+        }
+
+        // Gaussian elimination with partial pivoting to solve 8x8 linear system Ax = B
+        for (let i = 0; i < 8; i++) {
+            let maxRow = i;
+            for (let j = i + 1; j < 8; j++) {
+                if (Math.abs(A[j][i]) > Math.abs(A[maxRow][i])) {
+                    maxRow = j;
+                }
+            }
+            if (Math.abs(A[maxRow][i]) < 1e-10) return false; // Singular
+
+            // Swap rows
+            [A[i], A[maxRow]] = [A[maxRow], A[i]];
+            const tempB = B[i];
+            B[i] = B[maxRow];
+            B[maxRow] = tempB;
+
+            // Eliminate
+            for (let j = i + 1; j < 8; j++) {
+                const f = A[j][i] / A[i][i];
+                for (let k = i + 1; k < 8; k++) {
+                    A[j][k] -= f * A[i][k];
+                }
+                B[j] -= f * B[i];
+            }
+        }
+
+        // Back substitution
+        const x = new Float64Array(8);
+        for (let i = 7; i >= 0; i--) {
+            let sum = 0;
+            for (let j = i + 1; j < 8; j++) {
+                sum += A[i][j] * x[j];
+            }
+            x[i] = (B[i] - sum) / A[i][i];
+        }
+
+        out[0] = x[0]; out[1] = x[1]; out[2] = x[2];
+        out[3] = x[3]; out[4] = x[4]; out[5] = x[5];
+        out[6] = x[6]; out[7] = x[7]; out[8] = 1;
+
+        return true;
+    }
 }
