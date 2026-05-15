@@ -525,6 +525,26 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   
   const lastRenderedIndexRef = useRef<number>(-1);
 
+  // --- NEW: Worker for High-Performance Metrics ---
+  const metricsWorkerRef = useRef<Worker | null>(null);
+  const sharedMetricsBufferRef = useRef<any | null>(null);
+
+  useEffect(() => {
+    // Initialize Worker with true real-time Sab capabilities
+    try {
+        const worker = new Worker(new URL('../src/workers/metrics.worker.ts', import.meta.url), { type: 'module' });
+        metricsWorkerRef.current = worker;
+        console.log("[Worker] Metrics pipeline initialized.");
+    } catch (e) {
+        console.error("Critical: Worker initialization failed:", e);
+    }
+
+    return () => {
+        metricsWorkerRef.current?.terminate();
+        metricsWorkerRef.current = null;
+    };
+  }, []);
+
   const onResetRef = useRef(onReset);
   useEffect(() => { onResetRef.current = onReset; }, [onReset]);
   
@@ -1246,9 +1266,26 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     console.log("Calibration Mode: ", isDualAnchored ? "Dual Anchored (Bi-Planar)" : "Single Anchored");
 
     for (let i = 0; i < n; i++) {
-        // 先將 normalized (0~1) 轉為像素坐標
+        const frame = raw[i];
+        
+        // Calculate raw angles for smoothing
+        const kneeAngleRaw = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
+        const hipAngleRaw = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
+        const ankleAngleRaw = calculateAngle(frame.landmarks[25], frame.landmarks[27], frame.landmarks[31]);
+        const backAngleRaw = calculateAngleToHorizontal(frame.landmarks[11], frame.landmarks[23]);
+
+        // 將 normalized (0~1) 轉為像素坐標
         // 因為後續物理引擎需要 Y 向上，我們在此處先將 Y 翻轉: (1 - y) * canvasH
-        trackingBuffer.push(smoothedX[i] * canvasW, (1.0 - smoothedY[i]) * canvasH, 0, raw[i].time);
+        trackingBuffer.push(
+            smoothedX[i] * canvasW, 
+            (1.0 - smoothedY[i]) * canvasH, 
+            0, 
+            frame.time,
+            kneeAngleRaw,
+            hipAngleRaw,
+            ankleAngleRaw,
+            backAngleRaw
+        );
     }
     
     // 利用 HPC 執行整批座標轉換 (像素轉真實物理空間 mm)
@@ -1273,9 +1310,16 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     calibration.applyPerspectiveTransform(trackingBuffer);
 
     const outKinetics = new Float32Array(n * 4);
+    const outKnee = new Float32Array(n);
+    const outHip = new Float32Array(n);
+    const outAnkle = new Float32Array(n);
+    const outBack = new Float32Array(n);
     
     // 批次物理動力計算 (O(n) Zero-Allocation)
     PhysicsEngineHPC.computeKinetics(trackingBuffer, outKinetics, barbellMassRef.current);
+    
+    // --- NEW: Industrial Grade Angle Smoothing (OneEuro + Sigmoid) ---
+    PhysicsEngineHPC.smoothAngles(trackingBuffer, outKnee, outHip, outAnkle, outBack);
 
     const metrics: LiftMetrics[] = []; let maxVel = 0;
 
@@ -1297,11 +1341,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
         if (Math.abs(velocity) > maxVel) maxVel = Math.abs(velocity);
         
-        const kneeAngle = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
-        const hipAngle = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
-        const ankleAngle = calculateAngle(frame.landmarks[25], frame.landmarks[27], frame.landmarks[31]);
-        const backAngle = calculateAngleToHorizontal(frame.landmarks[11], frame.landmarks[23]);
-        
         metrics.push({ 
             time: frame.time.toFixed(3), 
             velocity: Math.max(0, velocity), 
@@ -1311,10 +1350,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             power: Math.max(0, power || 0), 
             x: sX, // 將原始的 X, Y 保留，供前端畫 2D 軌跡使用
             y: sY, 
-            kneeAngle, 
-            hipAngle,
-            ankleAngle,
-            backAngle
+            kneeAngle: outKnee[i], 
+            hipAngle: outHip[i],
+            ankleAngle: outAnkle[i],
+            backAngle: outBack[i]
         });
     }
 
@@ -1465,23 +1504,23 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
              overlayCtx.fillStyle = color; overlayCtx.fillText(text, x + padding, y); overlayCtx.restore();
          };
          const kneeIdx = landmarks[25].visibility > landmarks[26].visibility ? 25 : 26;
-         if (landmarks[kneeIdx].visibility > 0.3) { const val = calculateAngle(landmarks[kneeIdx-2], landmarks[kneeIdx], landmarks[kneeIdx+2]); drawBadge(`K: ${val.toFixed(0)}°`, landmarks[kneeIdx].x * w + 15, landmarks[kneeIdx].y * h, '#facc15'); }
+         if (landmarks[kneeIdx].visibility > 0.3) { const val = metric.kneeAngle; drawBadge(`K: ${val.toFixed(0)}°`, landmarks[kneeIdx].x * w + 15, landmarks[kneeIdx].y * h, '#facc15'); }
          
          const ankleIdx = landmarks[27].visibility > landmarks[28].visibility ? 27 : 28;
          if (landmarks[ankleIdx].visibility > 0.3) {
-             const val = calculateAngle(landmarks[ankleIdx-2], landmarks[ankleIdx], landmarks[ankleIdx+4]);
+             const val = metric.ankleAngle || 0;
              drawBadge(`A: ${val.toFixed(0)}°`, landmarks[ankleIdx].x * w + 15, landmarks[ankleIdx].y * h, '#10b981');
          }
 
          const hipIdx = landmarks[23].visibility > landmarks[24].visibility ? 23 : 24;
          if (landmarks[hipIdx].visibility > 0.3) { 
-             const val = calculateAngle(landmarks[hipIdx-12], landmarks[hipIdx], landmarks[hipIdx+2]); 
+             const val = metric.hipAngle; 
              drawBadge(`H: ${val.toFixed(0)}°`, landmarks[hipIdx].x * w + 15, landmarks[hipIdx].y * h, '#60a5fa'); 
              
              // Back angle badge
              const shoulderIdx = hipIdx - 12;
              if (landmarks[shoulderIdx].visibility > 0.3) {
-                 const backAngle = calculateAngleToHorizontal(landmarks[shoulderIdx], landmarks[hipIdx]);
+                 const backAngle = metric.backAngle || 0;
                  const midX = (landmarks[shoulderIdx].x + landmarks[hipIdx].x) / 2;
                  const midY = (landmarks[shoulderIdx].y + landmarks[hipIdx].y) / 2;
                  drawBadge(`B: ${backAngle.toFixed(0)}°`, midX * w + 15, midY * h, '#a78bfa');

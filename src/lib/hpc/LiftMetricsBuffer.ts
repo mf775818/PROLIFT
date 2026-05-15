@@ -20,15 +20,18 @@ export class LiftMetricsBuffer {
     public static readonly INDEX_ACCELERATION = 4;
     public static readonly INDEX_FORCE = 5;
     public static readonly INDEX_POWER = 6;
-    public static readonly INDEX_ANGLE = 7;
+    public static readonly INDEX_KNEE_ANGLE = 7;
+    public static readonly INDEX_HIP_ANGLE = 8;
+    public static readonly INDEX_ANKLE_ANGLE = 9;
+    public static readonly INDEX_BACK_ANGLE = 10;
 
     /**
      * Initialize a Ring Buffer over a SAB.
      * @param capacity Total number of metric frames capable of being stored.
-     * @param stride Number of Float64 elements per frame (default 8).
+     * @param stride Number of Float64 elements per frame (default 11).
      * @param existingBuffer Optional SAB if attaching from a Web Worker.
      */
-    constructor(capacity: number, stride: number = 8, existingBuffer?: SharedArrayBuffer) {
+    constructor(capacity: number, stride: number = 11, existingBuffer?: SharedArrayBuffer) {
         this.capacity = capacity;
         this.stride = stride;
 
@@ -61,10 +64,12 @@ export class LiftMetricsBuffer {
         acceleration: number, 
         force: number, 
         power: number, 
-        angle: number
+        knee: number,
+        hip: number,
+        ankle: number,
+        back: number
     ): void {
-        let head = Atomics.load(new Int32Array(this.buffer, this.headOffset * 8, 1), 0); // Mock atomics for simplicity
-        head = this.data[this.headOffset]; // actual unsafe read for speed, assuming single-writer
+        const head = this.data[this.headOffset]; // actual unsafe read for speed, assuming single-writer
         
         const offset = head * this.stride;
 
@@ -75,7 +80,10 @@ export class LiftMetricsBuffer {
         this.data[offset + LiftMetricsBuffer.INDEX_ACCELERATION] = acceleration;
         this.data[offset + LiftMetricsBuffer.INDEX_FORCE] = force;
         this.data[offset + LiftMetricsBuffer.INDEX_POWER] = power;
-        this.data[offset + LiftMetricsBuffer.INDEX_ANGLE] = angle;
+        this.data[offset + LiftMetricsBuffer.INDEX_KNEE_ANGLE] = knee;
+        this.data[offset + LiftMetricsBuffer.INDEX_HIP_ANGLE] = hip;
+        this.data[offset + LiftMetricsBuffer.INDEX_ANKLE_ANGLE] = ankle;
+        this.data[offset + LiftMetricsBuffer.INDEX_BACK_ANGLE] = back;
 
         // Increment and wrap
         const nextHead = (head + 1) % this.capacity;
