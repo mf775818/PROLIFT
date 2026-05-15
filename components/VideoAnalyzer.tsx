@@ -8,6 +8,7 @@ import { DepthCalibratorHPC } from '../src/lib/hpc/DepthCalibratorHPC';
 import { PhysicsEngineHPC } from '../src/lib/hpc/PhysicsEngineHPC';
 import { KalmanSmoother1D } from '../src/lib/hpc/KalmanSmoother';
 import { OnsetDetectorHPC } from '../src/lib/hpc/OnsetDetectorHPC';
+import { BiomechanicsProjectiveHPC } from '../src/lib/hpc/BiomechanicsProjectiveHPC';
 
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
@@ -1471,14 +1472,103 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const isDualAnchored = depthCalibrator.isHighPrecisionMode();
     console.log("Calibration Mode: ", isDualAnchored ? "Dual Anchored (Bi-Planar)" : "Single Anchored");
 
+    const twistShoulderRaw = new Float64Array(n);
+    const twistHipRaw = new Float64Array(n);
+    const twistMetricsOut = new Float64Array(2);
+
+    const applyAspect = (lm: Keypoint, w: number, h: number): Keypoint => {
+        if (!lm || lm.visibility < 0.1) return lm;
+        return { ...lm, x: lm.x * w, y: lm.y * h };
+    };
+
+    const projectToDLT = (lm: Keypoint, H: Float64Array, w: number, h: number): Keypoint => {
+        if (!lm || lm.visibility < 0.1) return lm;
+        const vec = new Float64Array([lm.x * w, lm.y * h, 1.0]);
+        const out = new Float64Array(3);
+        PerspectiveMath.multiplyMat3Vec3(out, H, vec);
+        const invW = 1.0 / out[2];
+        return {
+            ...lm,
+            x: (out[0] * invW), // Pixels
+            y: (out[1] * invW)  // Pixels
+        };
+    };
+
     for (let i = 0; i < n; i++) {
         const frame = raw[i];
         
-        // Calculate raw angles for smoothing
-        const kneeAngleRaw = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
-        const hipAngleRaw = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
-        const ankleAngleRaw = calculateAngle(frame.landmarks[25], frame.landmarks[27], frame.landmarks[31]);
-        const backAngleRaw = calculateAngleToHorizontal(frame.landmarks[11], frame.landmarks[23]);
+        let lm11 = frame.landmarks[11], lm12 = frame.landmarks[12], 
+            lm23 = frame.landmarks[23], lm24 = frame.landmarks[24],
+            lm25 = frame.landmarks[25], lm27 = frame.landmarks[27], lm31 = frame.landmarks[31],
+            lm15 = frame.landmarks[15], lm16 = frame.landmarks[16];
+
+        if (isDltConfirmed) {
+            lm11 = projectToDLT(lm11, hMatrix, canvasW, canvasH);
+            lm12 = projectToDLT(lm12, hMatrix, canvasW, canvasH);
+            lm23 = projectToDLT(lm23, hMatrix, canvasW, canvasH);
+            lm24 = projectToDLT(lm24, hMatrix, canvasW, canvasH);
+            lm25 = projectToDLT(lm25, hMatrix, canvasW, canvasH);
+            lm27 = projectToDLT(lm27, hMatrix, canvasW, canvasH);
+            lm31 = projectToDLT(lm31, hMatrix, canvasW, canvasH);
+            lm15 = projectToDLT(lm15, hMatrix, canvasW, canvasH);
+            lm16 = projectToDLT(lm16, hMatrix, canvasW, canvasH);
+        } else {
+            lm11 = applyAspect(lm11, canvasW, canvasH);
+            lm12 = applyAspect(lm12, canvasW, canvasH);
+            lm23 = applyAspect(lm23, canvasW, canvasH);
+            lm24 = applyAspect(lm24, canvasW, canvasH);
+            lm25 = applyAspect(lm25, canvasW, canvasH);
+            lm27 = applyAspect(lm27, canvasW, canvasH);
+            lm31 = applyAspect(lm31, canvasW, canvasH);
+            lm15 = applyAspect(lm15, canvasW, canvasH);
+            lm16 = applyAspect(lm16, canvasW, canvasH);
+        }
+
+        // BIOMECHANICS TWIST: Compute 3D un-projection
+        let bbL = new Float64Array([0, 0, 1]), bbR = new Float64Array([1, 0, 1]);
+        if (lm15 && lm16 && lm15.visibility > 0.1 && lm16.visibility > 0.1) {
+             bbL = new Float64Array([lm15.x, lm15.y, 1]);
+             bbR = new Float64Array([lm16.x, lm16.y, 1]);
+        } else {
+             // Fallback to smoothed barbell and horizontal line
+             let sxPix = smoothedX[i] * canvasW;
+             let syPix = smoothedY[i] * canvasH;
+             if (isDltConfirmed) {
+                const vec = new Float64Array([sxPix, syPix, 1.0]);
+                const out = new Float64Array(3);
+                PerspectiveMath.multiplyMat3Vec3(out, hMatrix, vec);
+                sxPix = out[0] / out[2];
+                syPix = out[1] / out[2];
+             }
+             bbL = new Float64Array([sxPix - 100, syPix, 1]);
+             bbR = new Float64Array([sxPix + 100, syPix, 1]);
+        }
+        
+        let shL = new Float64Array([0, 0, 1]), shR = new Float64Array([1, 0, 1]);
+        if (lm11 && lm12) {
+             shL = new Float64Array([lm11.x, lm11.y, 1]);
+             shR = new Float64Array([lm12.x, lm12.y, 1]);
+        }
+        
+        let hipL = new Float64Array([0, 0, 1]), hipR = new Float64Array([1, 0, 1]);
+        if (lm23 && lm24) {
+             hipL = new Float64Array([lm23.x, lm23.y, 1]);
+             hipR = new Float64Array([lm24.x, lm24.y, 1]);
+        }
+
+        // Note: Coordinates are ALREADY transformed by DLT above if isDltConfirmed is true.
+        BiomechanicsProjectiveHPC.analyzeSkeletalTwist(
+             twistMetricsOut, bbL, bbR, shL, shR, hipL, hipR,
+             null // Set to null since we pre-transformed landmarks
+        );
+        twistShoulderRaw[i] = twistMetricsOut[0];
+        twistHipRaw[i] = twistMetricsOut[1];
+
+        // Calculate raw angles for smoothing (on corrected aspect ratio / DLT plane)
+        const kneeAngleRaw = calculateAngle(lm23, lm25, lm27);
+        const hipAngleRaw = calculateAngle(lm11, lm23, lm25);
+        const ankleAngleRaw = calculateAngle(lm25, lm27, lm31);
+        const backAngleRaw = calculateAngleToHorizontal(lm11, lm23);
 
         // 將 normalized (0~1) 轉為像素坐標
         // 因為後續物理引擎需要 Y 向上，我們在此處先將 Y 翻轉: (1 - y) * canvasH
@@ -1555,7 +1645,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             kneeAngle: outKnee[i], 
             hipAngle: outHip[i],
             ankleAngle: outAnkle[i],
-            backAngle: outBack[i]
+            backAngle: outBack[i],
+            twistShoulder: twistShoulderRaw[i],
+            twistHip: twistHipRaw[i]
         });
     }
 
@@ -1726,6 +1818,15 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                  const midX = (landmarks[shoulderIdx].x + landmarks[hipIdx].x) / 2;
                  const midY = (landmarks[shoulderIdx].y + landmarks[hipIdx].y) / 2;
                  drawBadge(`B: ${backAngle.toFixed(0)}°`, midX * w + 15, midY * h, '#a78bfa');
+                 
+                 // Twist shoulder badge
+                 if (metric.twistShoulder !== undefined && Math.abs(metric.twistShoulder) > 2) {
+                     drawBadge(`Twist S: ${metric.twistShoulder.toFixed(1)}°`, midX * w + 15, midY * h - 25, '#ef4444');
+                 }
+                 // Twist hip badge
+                 if (metric.twistHip !== undefined && Math.abs(metric.twistHip) > 2) {
+                     drawBadge(`Twist H: ${metric.twistHip.toFixed(1)}°`, landmarks[hipIdx].x * w + 15, landmarks[hipIdx].y * h - 25, '#ef4444');
+                 }
              }
          }
       }
