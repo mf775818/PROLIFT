@@ -8,6 +8,8 @@ import { DepthCalibratorHPC } from '../src/lib/hpc/DepthCalibratorHPC';
 import { PhysicsEngineHPC } from '../src/lib/hpc/PhysicsEngineHPC';
 import { KalmanSmoother1D } from '../src/lib/hpc/KalmanSmoother';
 import { OnsetDetectorHPC } from '../src/lib/hpc/OnsetDetectorHPC';
+import { BiomechanicsProjectiveHPC } from '../src/lib/hpc/BiomechanicsProjectiveHPC';
+
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
 let g_cv: any = null;
@@ -524,26 +526,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const processingVideoRef = useRef<HTMLVideoElement>(document.createElement('video'));
   
   const lastRenderedIndexRef = useRef<number>(-1);
-
-  // --- NEW: Worker for High-Performance Metrics ---
-  const metricsWorkerRef = useRef<Worker | null>(null);
-  const sharedMetricsBufferRef = useRef<any | null>(null);
-
-  useEffect(() => {
-    // Initialize Worker with true real-time Sab capabilities
-    try {
-        const worker = new Worker(new URL('../src/workers/metrics.worker.ts', import.meta.url), { type: 'module' });
-        metricsWorkerRef.current = worker;
-        console.log("[Worker] Metrics pipeline initialized.");
-    } catch (e) {
-        console.error("Critical: Worker initialization failed:", e);
-    }
-
-    return () => {
-        metricsWorkerRef.current?.terminate();
-        metricsWorkerRef.current = null;
-    };
-  }, []);
 
   const onResetRef = useRef(onReset);
   useEffect(() => { onResetRef.current = onReset; }, [onReset]);
@@ -1391,7 +1373,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
             if (plateDLTWidth > 0 && plateDLTHeight > 0) {
                 // 物理真值比例 (Aspect Ratio) 補償係數
-                const arRatio = plateDLTHeight / plateDLTWidth;
+                const arRatio = Math.min(Math.max(plateDLTHeight / Math.max(plateDLTWidth, 0.01), 0.2), 5.0);
                 
                 // 動態延展或壓縮目標平面的寬度，以匹配相機變形
                 w = w * arRatio;
@@ -1470,6 +1452,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const isDualAnchored = depthCalibrator.isHighPrecisionMode();
     console.log("Calibration Mode: ", isDualAnchored ? "Dual Anchored (Bi-Planar)" : "Single Anchored");
 
+    const twistShoulderRaw = new Float64Array(n);
+    const twistHipRaw = new Float64Array(n);
+    const twistMetricsOut = new Float64Array(2);
+
     const applyAspect = (lm: Keypoint, w: number, h: number): Keypoint => {
         if (!lm || lm.visibility < 0.1) return lm;
         return { ...lm, x: lm.x * w, y: lm.y * h };
@@ -1516,6 +1502,61 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             lm31 = applyAspect(lm31, canvasW, canvasH);
             lm15 = applyAspect(lm15, canvasW, canvasH);
             lm16 = applyAspect(lm16, canvasW, canvasH);
+        }
+
+        // BIOMECHANICS TWIST: Compute 3D un-projection
+        let bbL = new Float64Array([0, 0, 1]), bbR = new Float64Array([1, 0, 1]);
+        if (lm15 && lm16 && lm15.visibility > 0.1 && lm16.visibility > 0.1) {
+             bbL = new Float64Array([lm15.x, lm15.y, 1]);
+             bbR = new Float64Array([lm16.x, lm16.y, 1]);
+        } else {
+             // Fallback to smoothed barbell and horizontal line
+             let sxPix = smoothedX[i] * canvasW;
+             let syPix = smoothedY[i] * canvasH;
+             if (isDltConfirmed) {
+                const vec = new Float64Array([sxPix, syPix, 1.0]);
+                const out = new Float64Array(3);
+                PerspectiveMath.multiplyMat3Vec3(out, hMatrix, vec);
+                sxPix = out[0] / out[2];
+                syPix = out[1] / out[2];
+             }
+             bbL = new Float64Array([sxPix - 100, syPix, 1]);
+             bbR = new Float64Array([sxPix + 100, syPix, 1]);
+        }
+        
+        let shL = new Float64Array([0, 0, 1]), shR = new Float64Array([1, 0, 1]);
+        if (lm11 && lm12) {
+             shL = new Float64Array([lm11.x, lm11.y, 1]);
+             shR = new Float64Array([lm12.x, lm12.y, 1]);
+        }
+        
+        let hipL = new Float64Array([0, 0, 1]), hipR = new Float64Array([1, 0, 1]);
+        if (lm23 && lm24) {
+             hipL = new Float64Array([lm23.x, lm23.y, 1]);
+             hipR = new Float64Array([lm24.x, lm24.y, 1]);
+        }
+
+        // Note: Coordinates are ALREADY transformed by DLT above if isDltConfirmed is true.
+        BiomechanicsProjectiveHPC.analyzeSkeletalTwist(
+             twistMetricsOut, bbL, bbR, shL, shR, hipL, hipR,
+             null // Set to null since we pre-transformed landmarks
+        );
+        twistShoulderRaw[i] = twistMetricsOut[0];
+        twistHipRaw[i] = twistMetricsOut[1];
+        
+        // --- STAGE 3: Industrial Projective Constraint (Hand-Barbell Snapping) ---
+        // Forced projection of wrist joints onto the barbell rigid axis to eliminate tracking jitter.
+        if (lm15 && lm15.visibility > 0.1) {
+            const rawH = new Float64Array([lm15.x, lm15.y, 1]);
+            const outH = new Float64Array(3);
+            BiomechanicsProjectiveHPC.constrainHandToBarbell(outH, rawH, bbL, bbR);
+            lm15.x = outH[0]; lm15.y = outH[1];
+        }
+        if (lm16 && lm16.visibility > 0.1) {
+            const rawH = new Float64Array([lm16.x, lm16.y, 1]);
+            const outH = new Float64Array(3);
+            BiomechanicsProjectiveHPC.constrainHandToBarbell(outH, rawH, bbL, bbR);
+            lm16.x = outH[0]; lm16.y = outH[1];
         }
 
         // Calculate raw angles for smoothing (on corrected aspect ratio / DLT plane)
@@ -1599,7 +1640,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             kneeAngle: outKnee[i], 
             hipAngle: outHip[i],
             ankleAngle: outAnkle[i],
-            backAngle: outBack[i]
+            backAngle: outBack[i],
+            twistShoulder: twistShoulderRaw[i],
+            twistHip: twistHipRaw[i]
         });
     }
 
@@ -1770,6 +1813,15 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                  const midX = (landmarks[shoulderIdx].x + landmarks[hipIdx].x) / 2;
                  const midY = (landmarks[shoulderIdx].y + landmarks[hipIdx].y) / 2;
                  drawBadge(`B: ${backAngle.toFixed(0)}°`, midX * w + 15, midY * h, '#a78bfa');
+                 
+                 // Twist shoulder badge
+                 if (metric.twistShoulder !== undefined && Math.abs(metric.twistShoulder) > 2) {
+                     drawBadge(`Twist S: ${metric.twistShoulder.toFixed(1)}°`, midX * w + 15, midY * h - 25, '#ef4444');
+                 }
+                 // Twist hip badge
+                 if (metric.twistHip !== undefined && Math.abs(metric.twistHip) > 2) {
+                     drawBadge(`Twist H: ${metric.twistHip.toFixed(1)}°`, landmarks[hipIdx].x * w + 15, landmarks[hipIdx].y * h - 25, '#ef4444');
+                 }
              }
          }
       }

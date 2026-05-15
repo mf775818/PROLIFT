@@ -9,6 +9,8 @@ export interface LiftMetrics {
   hipAngle: number;
   ankleAngle?: number;
   backAngle?: number;
+  twistShoulder?: number;
+  twistHip?: number;
 }
 
 export interface Keypoint {
