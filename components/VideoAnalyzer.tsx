@@ -63,21 +63,39 @@ const calculateAngleToHorizontal = (a: Keypoint, b: Keypoint): number => {
 };
 
 const getHeatColor = (value: number, min: number, max: number) => {
-  if (max === min) return `rgba(59, 130, 246, 0.8)`;
-  const normalized = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  if (max <= min) return `rgba(59, 130, 246, 0.8)`;
+  // Optimized curve for power distribution: slightly less aggressive for more linear mid-range perception
+  const rawRatio = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  const ratio = Math.pow(rawRatio, 0.85);
 
-  if (normalized < 0.25) {
-      return `rgb(0, ${Math.floor(255 * (normalized / 0.25))}, 255)`;
-  } else if (normalized < 0.5) {
-      return `rgb(0, 255, ${Math.floor(255 * (1 - (normalized - 0.25) / 0.25))})`;
-  } else if (normalized < 0.75) {
-      return `rgb(${Math.floor(255 * ((normalized - 0.5) / 0.25))}, 255, 0)`;
-  } else if (normalized < 0.95) {
-      return `rgb(255, ${Math.floor(255 * (1 - (normalized - 0.75) / 0.2))}, 0)`;
-  } else {
-      const t = (normalized - 0.95) / 0.05;
-      return `rgb(255, ${Math.floor(255 * t)}, ${Math.floor(255 * t)})`;
+  // High-Resolution 12-stop "Precision-Thermal" spectrum
+  const stops = [
+    { p: 0.00, r: 30,  g: 64,  b: 175 }, // Deep Navy
+    { p: 0.10, r: 59,  g: 130, b: 246 }, // Bright Blue
+    { p: 0.20, r: 6,   g: 182, b: 212 }, // Cyan
+    { p: 0.30, r: 20,  g: 184, b: 166 }, // Teal
+    { p: 0.40, r: 34,  g: 197, b: 94  }, // Vibrant Green
+    { p: 0.50, r: 163, g: 230, b: 53  }, // Lime/Chartreuse
+    { p: 0.60, r: 250, g: 204, b: 21  }, // Yellow
+    { p: 0.70, r: 251, g: 146, b: 60  }, // Soft Orange
+    { p: 0.80, r: 249, g: 115, b: 22  }, // Bold Orange
+    { p: 0.90, r: 239, g: 68,  b: 68  }, // High-Intensity Red
+    { p: 0.96, r: 185, g: 28,  b: 28  }, // Deep Crimson
+    { p: 1.00, r: 217, g: 70,  b: 239 }  // Ultimate Peak Magenta
+  ];
+
+  for (let i = 0; i < stops.length - 1; i++) {
+    const s1 = stops[i];
+    const s2 = stops[i + 1];
+    if (ratio >= s1.p && ratio <= s2.p) {
+      const t = (ratio - s1.p) / (s2.p - s1.p);
+      const r = Math.round(s1.r + (s2.r - s1.r) * t);
+      const g = Math.round(s1.g + (s2.g - s1.g) * t);
+      const b = Math.round(s1.b + (s2.b - s1.b) * t);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
   }
+  return `rgb(217, 70, 239)`;
 };
 
 const catmullRom = (p0: number, p1: number, p2: number, p3: number, t: number) => {
@@ -624,6 +642,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const pixelToMeterRef = useRef<number>(0.0025); 
   const maxVelocityRef = useRef<number>(1.5);
   const barbellMassRef = useRef(barbellMass);
+  const peakDataRef = useRef<{ x: number, y: number, power: number } | null>(null);
   
   const rawDataRef = useRef<RawFrameData[]>([]);
 
@@ -1612,9 +1631,23 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     compressedLiftHistory.current = compressedMetrics;
     
     // --- PRECOMPUTE RENDERING COMMANDS ---
-    const localMaxPower = Math.max(...compressedMetrics.map(m => m.power || 0), 1);
+    // Commercial optimization: Calculate 98th percentile to prevent tracking noise from squashing the heatmap range
+    const powerList = compressedMetrics.map(m => m.power || 0);
+    const sortedPowers = [...powerList].sort((a, b) => a - b);
+    const p98 = sortedPowers[Math.floor(sortedPowers.length * 0.98)] || 1;
+    const localMaxPower = Math.max(p98, 1);
+
+    // Find absolute peak for commercial-grade static marker
+    const peakIdx = powerList.reduce((maxIdx, val, idx, arr) => val > arr[maxIdx] ? idx : maxIdx, 0);
+    peakDataRef.current = {
+        x: compressedMetrics[peakIdx].x,
+        y: compressedMetrics[peakIdx].y,
+        power: compressedMetrics[peakIdx].power || 0
+    };
+
     const precomputed = compressedMetrics.map(curr => {
         const time = typeof curr.time === 'string' ? parseFloat(curr.time) : curr.time;
+        // Use the power-mapped color
         const color = getHeatColor(curr.power || 0, 0, localMaxPower);
         return { x: curr.x, y: curr.y, time, color };
     });
@@ -1810,6 +1843,28 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       overlayCtx.beginPath(); overlayCtx.arc(zx, zy, 5, 0, 2*Math.PI); overlayCtx.fillStyle = '#22c55e'; overlayCtx.fill();
     
 
+      // --- COMMERCIAL DESIGN: PERSISTENT PEAK MARKER ---
+      if (peakDataRef.current) {
+          const { x, y } = peakDataRef.current;
+          const px = x * w;
+          const py = y * h;
+          
+          overlayCtx.save();
+          overlayCtx.beginPath();
+          overlayCtx.strokeStyle = 'rgba(217, 70, 239, 0.6)';
+          overlayCtx.setLineDash([4, 2]);
+          overlayCtx.lineWidth = 1.5;
+          overlayCtx.arc(px, py, 12, 0, 2 * Math.PI);
+          overlayCtx.stroke();
+          
+          // Draw peak indicator text
+          overlayCtx.font = 'bold 10px sans-serif';
+          overlayCtx.fillStyle = '#d946ef';
+          overlayCtx.textBaseline = 'bottom';
+          overlayCtx.fillText('PEAK', px + 14, py - 4);
+          overlayCtx.restore();
+      }
+
       // --- ADVANCED COMPRESSION RENDERING (LTS: LAYERED TIME-STATE ZERO-ALLOCATION) ---
       const currentT = typeof metric.time === 'string' ? parseFloat(metric.time) : metric.time;
       const commands = renderCommandsRef.current;
@@ -1876,6 +1931,44 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
               }
           }
           lastRenderedIndexRef.current = targetIdx;
+
+          // --- COMMERCIAL DESIGN: REAL-TIME TRACKING BADGE ---
+          const curPoint = commands[targetIdx];
+          if (curPoint) {
+              const cx = curPoint.x * w;
+              const cy = curPoint.y * h;
+              
+              // Draw "Barbell Head"
+              overlayCtx.beginPath();
+              overlayCtx.arc(cx, cy, 7, 0, 2 * Math.PI);
+              overlayCtx.fillStyle = curPoint.color;
+              overlayCtx.fill();
+              overlayCtx.strokeStyle = 'white';
+              overlayCtx.lineWidth = 2;
+              overlayCtx.stroke();
+
+              // Floating Power Value
+              const pVal = metric.power || 0;
+              if (pVal > 15) {
+                // drawBadge is scoped inside drawOverlay
+                const label = `${pVal.toFixed(0)}W`;
+                const padding = 4;
+                const fontSize = Math.max(11, w * 0.018);
+                overlayCtx.font = `bold ${fontSize}px sans-serif`;
+                const textMetrics = overlayCtx.measureText(label);
+                const bgW = textMetrics.width + padding * 2;
+                const bgH = fontSize + padding * 2;
+                
+                overlayCtx.save();
+                overlayCtx.fillStyle = 'rgba(0,0,0,0.85)';
+                overlayCtx.beginPath();
+                overlayCtx.roundRect(cx + 12, cy - bgH / 2, bgW, bgH, 4);
+                overlayCtx.fill();
+                overlayCtx.fillStyle = curPoint.color;
+                overlayCtx.fillText(label, cx + 12 + padding, cy + fontSize/2 - 2);
+                overlayCtx.restore();
+              }
+          }
       }
 
       // Draw the "live" segment to the absolute current metric on the overlay so it updates at 60fps
