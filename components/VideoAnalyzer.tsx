@@ -1478,7 +1478,27 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         const kneeAngleRaw = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
         const hipAngleRaw = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
         const ankleAngleRaw = calculateAngle(frame.landmarks[25], frame.landmarks[27], frame.landmarks[31]);
-        const backAngleRaw = calculateAngleToHorizontal(frame.landmarks[11], frame.landmarks[23]);
+        
+        // --- 🐒C++++ 手術刀調整：DLT 背角同步校正 ---
+        // 當 DLT 啟用時，應以此平面校正後的 X 軸作為水平基準進行同步計算
+        let backAngleRaw = 0;
+        if (isDltConfirmed && dltPoints.length === 4) {
+            const sh = frame.landmarks[11];
+            const hp = frame.landmarks[23];
+            const sVec = new Float64Array([sh.x * canvasW, sh.y * canvasH, 1]);
+            const hVec = new Float64Array([hp.x * canvasW, hp.y * canvasH, 1]);
+            const sDst = new Float64Array(3);
+            const hDst = new Float64Array(3);
+            PerspectiveMath.multiplyMat3Vec3(sDst, hMatrix, sVec);
+            PerspectiveMath.multiplyMat3Vec3(hDst, hMatrix, hVec);
+            
+            // 使用 DLT 校正後的座標計算背角，此時 DLT 空間的 X 軸即為物理水平基準
+            const pS = { x: sDst[0]/sDst[2], y: sDst[1]/sDst[2], visibility: 1 };
+            const pH = { x: hDst[0]/hDst[2], y: hDst[1]/hDst[2], visibility: 1 };
+            backAngleRaw = calculateAngleToHorizontal(pS, pH);
+        } else {
+            backAngleRaw = calculateAngleToHorizontal(frame.landmarks[11], frame.landmarks[23]);
+        }
 
         // 將 normalized (0~1) 轉為像素坐標
         // 因為後續物理引擎需要 Y 向上，我們在此處先將 Y 翻轉: (1 - y) * canvasH
