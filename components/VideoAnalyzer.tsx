@@ -63,10 +63,21 @@ const calculateAngleToHorizontal = (a: Keypoint, b: Keypoint): number => {
 };
 
 const getHeatColor = (value: number, min: number, max: number) => {
-  if (max === min) return `hsl(240, 100%, 50%)`;
+  if (max === min) return `rgba(59, 130, 246, 0.8)`;
   const normalized = Math.max(0, Math.min(1, (value - min) / (max - min)));
-  const hue = 240 * (1 - normalized);
-  return `hsl(${hue}, 100%, 50%)`;
+
+  if (normalized < 0.25) {
+      return `rgb(0, ${Math.floor(255 * (normalized / 0.25))}, 255)`;
+  } else if (normalized < 0.5) {
+      return `rgb(0, 255, ${Math.floor(255 * (1 - (normalized - 0.25) / 0.25))})`;
+  } else if (normalized < 0.75) {
+      return `rgb(${Math.floor(255 * ((normalized - 0.5) / 0.25))}, 255, 0)`;
+  } else if (normalized < 0.95) {
+      return `rgb(255, ${Math.floor(255 * (1 - (normalized - 0.75) / 0.2))}, 0)`;
+  } else {
+      const t = (normalized - 0.95) / 0.05;
+      return `rgb(255, ${Math.floor(255 * t)}, ${Math.floor(255 * t)})`;
+  }
 };
 
 const catmullRom = (p0: number, p1: number, p2: number, p3: number, t: number) => {
@@ -1601,10 +1612,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     compressedLiftHistory.current = compressedMetrics;
     
     // --- PRECOMPUTE RENDERING COMMANDS ---
+    const localMaxPower = Math.max(...compressedMetrics.map(m => m.power || 0), 1);
     const precomputed = compressedMetrics.map(curr => {
         const time = typeof curr.time === 'string' ? parseFloat(curr.time) : curr.time;
-        const ratio = clamp(curr.velocity / maxVel, 0, 1);
-        const color = getHeatColor(ratio * maxVel, 0, maxVel);
+        const color = getHeatColor(curr.power || 0, 0, localMaxPower);
         return { x: curr.x, y: curr.y, time, color };
     });
     renderCommandsRef.current = precomputed;
