@@ -1912,13 +1912,20 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
               return { x: (v3B[0] / v3B[2]) / vW * w, y: (v3B[1] / v3B[2]) / vH * h };
           };
 
-          const py1 = projBuf(vx, Math.max(-10000, vy - 5000));
-          const py2 = projBuf(vx, Math.min(10000, vy + 5000));
+          // --- VIRTUAL PLANE AXES (PERSPECTIVE) ---
+          overlayCtx.save();
+          overlayCtx.strokeStyle = 'rgba(34, 197, 94, 0.8)'; 
+          // Y-Axis (Vertical in DLT space) - MUST PASS THROUGH THE ORIGIN POINT
+          const py1 = projBuf(vx, vy - 10000);
+          const py2 = projBuf(vx, vy + 10000);
           overlayCtx.beginPath(); overlayCtx.moveTo(py1.x, py1.y); overlayCtx.lineTo(py2.x, py2.y); overlayCtx.stroke();
-          const px1 = projBuf(Math.max(-10000, vx - 5000), vy);
-          const px2 = projBuf(Math.min(10000, vx + 5000), vy);
+          // X-Axis (Horizontal in DLT space)
+          const px1 = projBuf(vx - 10000, vy);
+          const px2 = projBuf(vx + 10000, vy);
           overlayCtx.beginPath(); overlayCtx.moveTo(px1.x, px1.y); overlayCtx.lineTo(px2.x, px2.y); overlayCtx.stroke();
+          overlayCtx.restore();
       } else {
+          // --- SCREEN SPACE CROSSHAIR ---
           overlayCtx.beginPath(); overlayCtx.moveTo(zx, 0); overlayCtx.lineTo(zx, h); overlayCtx.stroke();
           overlayCtx.beginPath(); overlayCtx.moveTo(0, zy); overlayCtx.lineTo(w, zy); overlayCtx.stroke();
       }
@@ -2013,10 +2020,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           }
       }
 
-      // --- DLT GRID ---
+      // --- DLT GRID & BORDER ---
       const currentDltPoints = dltPointsRef.current;
-      if (currentIsDltConfirmed && currentInvHMatrix && (delta < -2 || delta > 30 || lastIdx === -1)) {
-          pathCtx.save();
+      if (currentIsDltConfirmed && currentInvHMatrix) {
+          overlayCtx.save();
           const divs = 10;
           const vW = processingVideoRef.current?.videoWidth || w;
           const vH = processingVideoRef.current?.videoHeight || h;
@@ -2039,16 +2046,23 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                   return { x: (outBuf[0] / outBuf[2]) / vW * w, y: (outBuf[1] / outBuf[2]) / vH * h };
               };
 
-              pathCtx.strokeStyle = '#00e5ff'; pathCtx.globalAlpha = 0.5; pathCtx.lineWidth = 1; pathCtx.setLineDash([4, 4]);
+              // --- OUTER BORDER (SOLID) ---
+              overlayCtx.strokeStyle = '#00e5ff'; overlayCtx.globalAlpha = 0.8; overlayCtx.lineWidth = 2; overlayCtx.setLineDash([]);
+              const p1 = proj(minX, minY); const p2 = proj(minX + virtW, minY);
+              const p3 = proj(minX + virtW, minY + virtH); const p4 = proj(minX, minY + virtH);
+              overlayCtx.beginPath(); overlayCtx.moveTo(p1.x, p1.y); overlayCtx.lineTo(p2.x, p2.y); 
+              overlayCtx.lineTo(p3.x, p3.y); overlayCtx.lineTo(p4.x, p4.y); overlayCtx.closePath(); overlayCtx.stroke();
+
+              // --- INTERNAL GRID (DASHED) ---
+              overlayCtx.strokeStyle = '#00e5ff'; overlayCtx.globalAlpha = 0.4; overlayCtx.lineWidth = 1; overlayCtx.setLineDash([4, 4]);
               for (let i = 1; i < divs; i++) {
                   const sY = minY + i * (virtH / divs); const p1h = proj(minX, sY); const p2h = proj(minX + virtW, sY);
-                  pathCtx.beginPath(); pathCtx.moveTo(p1h.x, p1h.y); pathCtx.lineTo(p2h.x, p2h.y); pathCtx.stroke();
+                  overlayCtx.beginPath(); overlayCtx.moveTo(p1h.x, p1h.y); overlayCtx.lineTo(p2h.x, p2h.y); overlayCtx.stroke();
                   const sX = minX + i * (virtW / divs); const p1v = proj(sX, minY); const p2v = proj(sX, minY + virtH);
-                  pathCtx.beginPath(); pathCtx.moveTo(p1v.x, p1v.y); pathCtx.lineTo(p2v.x, p2v.y); pathCtx.stroke();
+                  overlayCtx.beginPath(); overlayCtx.moveTo(p1v.x, p1v.y); overlayCtx.lineTo(p2v.x, p2v.y); overlayCtx.stroke();
               }
-              pathCtx.setLineDash([]);
           }
-          pathCtx.restore();
+          overlayCtx.restore();
       }
 
       // --- CURRENT POINT & VELOCITY LABEL ---
