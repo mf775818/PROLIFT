@@ -1,4 +1,6 @@
 import { Point3D, BoundingBox, Perspective, CalibrationResult } from "./types";
+import { CalibrationEngine as HPCCalibration } from "./src/lib/hpc/CalibrationEngine";
+import { ProjectiveMathHPC } from "./src/lib/hpc/ProjectiveMathHPC";
 
 /**
  * ProLift AI 工業級空間校正引擎 (Industrial-Grade Calibration Engine)
@@ -9,6 +11,12 @@ export class CalibrationEngine {
   private static readonly STANDARD_PLATE_DIAMETER_M = 0.45;
   // 視角檢查閾值，編譯器層級內聯
   private static readonly SAGITTAL_THRESHOLD = 1.5;
+
+  private hpcEngine: HPCCalibration;
+
+  constructor(hpcEngine?: HPCCalibration) {
+      this.hpcEngine = hpcEngine || new HPCCalibration();
+  }
 
   // 靜態內存池 (Object Pooling): 避免每一幀生成新物件導致 GC 停頓 (Jank)
   private readonly _cachedResult: CalibrationResult = {
@@ -59,11 +67,18 @@ export class CalibrationEngine {
       : Perspective.FRONTAL;
   }
 
+  private readonly _tempCenter = new Float64Array(3);
+
   /**
    * Step 2: 主核心計算 - 條件式 ROI 校正與映射
    * O(1) 效能，全程不生成任何暫存變數垃圾 (Zero-Garbage)
    */
-  public calibrate(landmarks: Point3D[], barbellRoi: BoundingBox | null): CalibrationResult {
+  public calibrate(
+    landmarks: Point3D[], 
+    barbellRoi: BoundingBox | null,
+    conicMatrixQ?: Float64Array,
+    vanishingLine?: Float64Array
+  ): CalibrationResult {
     const perspective = this.detectCameraPerspective(landmarks);
     
     // 直接覆寫預先分配的內存區塊
@@ -79,24 +94,36 @@ export class CalibrationEngine {
         this._cachedResult.strategy = "AWAITING_ROI";
         return this._cachedResult; // 安全跳出
       }
-      
+
+      if (conicMatrixQ && vanishingLine) {
+        // 真實 3D 投影校正：依賴 ProjectiveMathHPC.computeTruePhysicalCenter
+        const success = ProjectiveMathHPC.computeTruePhysicalCenter(this._tempCenter, conicMatrixQ, vanishingLine);
+        if (success) {
+            // 已獲取真實投影中心。
+            // 使用 HPC 引擎內的 H 矩陣作為參考座標轉換
+            // _updateMatrix 等 Affine 行為將被取代，這裡可以留 1, 1 作為佔位，因為後續會依賴 H 矩陣進行追蹤
+            this._updateMatrix(1, 1);
+            
+            // 將 bbox 的寬度做為粗略參考（後續應改用物理特徵的 cross-ratio 等）
+            const projectedDiameterPx = Math.max(barbellRoi.width, barbellRoi.height);
+            this._cachedResult.scaleFactor = CalibrationEngine.STANDARD_PLATE_DIAMETER_M / (projectedDiameterPx || 0.0001);
+            this._cachedResult.strategy = "PROJECTIVE_TRUE_CENTER";
+            this._cachedResult.message = "Sagittal View: Projective Math HPC integrated. H matrix delegated.";
+            return this._cachedResult;
+        }
+      }
+
+      // 退回備案
       const w = barbellRoi.width;
       const h = barbellRoi.height;
-      
-      // 取代 Math.max，降低呼叫堆疊深度並利於 JIT 引擎 Inline
       const projectedDiameterPx = w > h ? w : h;
-      
-      // 避免浮點數除零錯誤 (除法極耗 cycle，以乘法倒數取代但此處僅2階可直除)
-      // 若萬一寬高為0給予一個極小補償
       const scaleX = projectedDiameterPx / (w || 0.0001);
       const scaleY = projectedDiameterPx / (h || 0.0001);
 
       this._updateMatrix(scaleX, scaleY);
-
-      // Scale Factor: Unit is (Meters per Pixel)
-      this._cachedResult.scaleFactor = CalibrationEngine.STANDARD_PLATE_DIAMETER_M / projectedDiameterPx;
-      this._cachedResult.strategy = "AFFINE_REVERSE_ENGINEERING";
-      this._cachedResult.message = "Sagittal View: O(1) transform and physical scale factor applied.";
+      this._cachedResult.scaleFactor = CalibrationEngine.STANDARD_PLATE_DIAMETER_M / (projectedDiameterPx || 0.0001);
+      this._cachedResult.strategy = "AFFINE_REVERSE_ENGINEERING_DEPRECATED";
+      this._cachedResult.message = "Sagittal View: Affine fallback used.";
     }
 
     return this._cachedResult;

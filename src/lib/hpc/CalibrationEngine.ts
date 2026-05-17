@@ -23,21 +23,16 @@ export class CalibrationEngine {
     public calibrate(srcPts: number[], dstPts: number[]): boolean {
         if (srcPts.length !== 8 || dstPts.length !== 8) return false;
 
-        // Simplified implementation of DLT/Homography setup.
-        // For production, a Full Gaussian Elimination solver is needed here 
-        // to solve the 8x8 linear system A * h = b.
-        // As a proxy for this exercise, we will write an identity or affine fallback.
-        
-        // --- Pseudo-DLT Solver Setup ---
-        // (Assuming solve happens here computing H)
-        // ... matrix solving logic ...
-        
-        // Mock identity for now to satisfy interface requirement
-        this.H.set([
-            1, 0, 0, 
-            0, 1, 0, 
-            0, 0, 1
-        ]);
+        const success = PerspectiveMath.calculateHomography(this.H, srcPts, dstPts);
+        if (!success) {
+            // Fallback to Identity if singular
+            this.H.set([
+                1, 0, 0, 
+                0, 1, 0, 
+                0, 0, 1
+            ]);
+            return false;
+        }
         
         return true; 
     }
