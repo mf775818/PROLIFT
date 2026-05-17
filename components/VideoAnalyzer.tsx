@@ -2001,22 +2001,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
               overlayCtx.beginPath(); overlayCtx.arc(cx, cy, 7, 0, 2 * Math.PI);
               overlayCtx.fillStyle = curPoint.color; overlayCtx.fill();
               overlayCtx.strokeStyle = 'white'; overlayCtx.lineWidth = 2; overlayCtx.stroke();
-
-              const pVal = metric.power || 0;
-              if (pVal > 15) {
-                 const label = `${pVal.toFixed(0)}W`;
-                 const fSize = Math.max(11, w * 0.018);
-                 overlayCtx.font = `bold ${fSize}px sans-serif`;
-                 const tm = overlayCtx.measureText(label);
-                 const bgW = tm.width + 10;
-                 const bgH = fSize + 8;
-                 overlayCtx.save();
-                 overlayCtx.fillStyle = 'rgba(0,0,0,0.85)';
-                 overlayCtx.beginPath(); overlayCtx.roundRect(cx + 12, cy - bgH / 2, bgW, bgH, 4); overlayCtx.fill();
-                 overlayCtx.fillStyle = curPoint.color;
-                 overlayCtx.fillText(label, cx + 17, cy + fSize/2 - 2);
-                 overlayCtx.restore();
-              }
           }
       }
 
@@ -2065,20 +2049,65 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           overlayCtx.restore();
       }
 
-      // --- CURRENT POINT & VELOCITY LABEL ---
+      // --- COMPOSITE METRICS BADGE (Displacement, Velocity, Power) ---
       const cx = metric.x * w; const cy = metric.y * h;
       overlayCtx.beginPath(); overlayCtx.arc(cx, cy, 8, 0, 2 * Math.PI); 
       overlayCtx.fillStyle = '#facc15'; overlayCtx.strokeStyle = 'rgba(0,0,0,0.5)'; 
       overlayCtx.lineWidth = 2; overlayCtx.fill(); overlayCtx.stroke();
       
       const devCm = (metric.x - startXRef.current) * 200;
-      overlayCtx.save(); 
-      overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.7)'; 
-      overlayCtx.roundRect(cx + 12, cy - 10, 60, 20, 4); 
-      overlayCtx.fill(); 
-      overlayCtx.fillStyle = devCm > 0 ? '#ef4444' : '#10b981'; 
-      overlayCtx.font = 'bold 12px monospace'; 
-      overlayCtx.fillText(`${devCm > 0 ? '+' : ''}${devCm.toFixed(1)}cm`, cx + 16, cy + 4); 
+      const vVal = metric.velocity || 0;
+      const pVal = metric.power || 0;
+      
+      const labelDev = `${devCm > 0 ? '+' : ''}${devCm.toFixed(1)}cm`;
+      const labelVel = `${Math.abs(vVal).toFixed(2)}m/s`;
+      const labelPow = `${pVal.toFixed(0)}W`;
+      
+      overlayCtx.save();
+      const fSize = Math.max(12, w * 0.015);
+      overlayCtx.font = `bold ${fSize}px monospace`;
+      
+      const tmDev = overlayCtx.measureText(labelDev);
+      const tmVel = overlayCtx.measureText(labelVel);
+      const tmPow = overlayCtx.measureText(labelPow);
+      let maxTextW = tmDev.width;
+      
+      let lines = 1;
+      if (Math.abs(vVal) > 0.01) { lines++; maxTextW = Math.max(maxTextW, tmVel.width); }
+      if (pVal > 15) { lines++; maxTextW = Math.max(maxTextW, tmPow.width); }
+      
+      const bgW = maxTextW + 20;
+      const lineHeight = fSize * 1.5;
+      const bgH = lines * lineHeight + 8;
+      
+      let boxX = cx + 16;
+      let boxY = cy - bgH / 2;
+      
+      if (boxX + bgW > w) boxX = cx - bgW - 16;
+      if (boxY < 0) boxY = cy + 16;
+      if (boxY + bgH > h) boxY = cy - bgH - 16;
+      
+      overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+      overlayCtx.beginPath(); overlayCtx.roundRect(boxX, boxY, bgW, bgH, 6); overlayCtx.fill();
+      
+      let currentY = boxY + 6 + fSize;
+      
+      overlayCtx.fillStyle = devCm > 0 ? '#ef4444' : '#10b981';
+      overlayCtx.fillText(labelDev, boxX + 10, currentY);
+      currentY += lineHeight;
+      
+      if (Math.abs(vVal) > 0.01) {
+          overlayCtx.fillStyle = '#facc15'; 
+          overlayCtx.fillText(labelVel, boxX + 10, currentY);
+          currentY += lineHeight;
+      }
+      
+      if (pVal > 15) {
+          const powerColor = commands[targetIdx]?.color || '#60a5fa';
+          overlayCtx.fillStyle = powerColor; 
+          overlayCtx.fillText(labelPow, boxX + 10, currentY);
+      }
+      
       overlayCtx.restore();
   }, []);
 
