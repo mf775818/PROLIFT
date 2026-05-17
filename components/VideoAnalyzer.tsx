@@ -63,39 +63,33 @@ const calculateAngleToHorizontal = (a: Keypoint, b: Keypoint): number => {
 };
 
 const getHeatColor = (value: number, min: number, max: number) => {
-  if (max <= min) return `rgba(59, 130, 246, 0.8)`;
-  // Optimized curve for power distribution: slightly less aggressive for more linear mid-range perception
-  const rawRatio = Math.max(0, Math.min(1, (value - min) / (max - min)));
-  const ratio = Math.pow(rawRatio, 0.85);
+  if (max <= min) return 'rgb(37, 99, 235)'; // Default Blue
+  
+  // High-performance normalization
+  const ratio = Math.max(0, Math.min(1, (value - min) / (max - min)));
 
-  // High-Resolution 12-stop "Precision-Thermal" spectrum
+  // Global 7-stop spectrum: Pure Blue -> Cyan -> Green -> Yellow -> Orange -> Crimson -> Pure Red
+  // Evenly distributed for maximum visual separation (Industry standard for heatmaps)
   const stops = [
-    { p: 0.00, r: 30,  g: 64,  b: 175 }, // Deep Navy
-    { p: 0.10, r: 59,  g: 130, b: 246 }, // Bright Blue
-    { p: 0.20, r: 6,   g: 182, b: 212 }, // Cyan
-    { p: 0.30, r: 20,  g: 184, b: 166 }, // Teal
-    { p: 0.40, r: 34,  g: 197, b: 94  }, // Vibrant Green
-    { p: 0.50, r: 163, g: 230, b: 53  }, // Lime/Chartreuse
-    { p: 0.60, r: 250, g: 204, b: 21  }, // Yellow
-    { p: 0.70, r: 251, g: 146, b: 60  }, // Soft Orange
-    { p: 0.80, r: 249, g: 115, b: 22  }, // Bold Orange
-    { p: 0.90, r: 239, g: 68,  b: 68  }, // High-Intensity Red
-    { p: 0.96, r: 185, g: 28,  b: 28  }, // Deep Crimson
-    { p: 1.00, r: 217, g: 70,  b: 239 }  // Ultimate Peak Magenta
+    { p: 0.00, r: 37,  g: 99,  b: 235 }, // Blue (0%)
+    { p: 0.16, r: 6,   g: 182, b: 212 }, // Cyan
+    { p: 0.33, r: 34,  g: 197, b: 94  }, // Green
+    { p: 0.50, r: 234, g: 179, b: 8   }, // Yellow
+    { p: 0.66, r: 249, g: 115, b: 22  }, // Orange
+    { p: 0.83, r: 239, g: 68,  b: 68  }, // Crimson
+    { p: 1.00, r: 220, g: 38,  b: 38  }  // Pure Red (100%) - Linear Peak
   ];
 
-  for (let i = 0; i < stops.length - 1; i++) {
+  // Fast linear interpolation
+  for (let i = 0; i < 6; i++) {
     const s1 = stops[i];
     const s2 = stops[i + 1];
     if (ratio >= s1.p && ratio <= s2.p) {
       const t = (ratio - s1.p) / (s2.p - s1.p);
-      const r = Math.round(s1.r + (s2.r - s1.r) * t);
-      const g = Math.round(s1.g + (s2.g - s1.g) * t);
-      const b = Math.round(s1.b + (s2.b - s1.b) * t);
-      return `rgb(${r}, ${g}, ${b})`;
+      return `rgb(${Math.round(s1.r + (s2.r - s1.r) * t)}, ${Math.round(s1.g + (s2.g - s1.g) * t)}, ${Math.round(s1.b + (s2.b - s1.b) * t)})`;
     }
   }
-  return `rgb(217, 70, 239)`;
+  return 'rgb(220, 38, 38)';
 };
 
 const catmullRom = (p0: number, p1: number, p2: number, p3: number, t: number) => {
@@ -578,7 +572,14 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const onResetRef = useRef(onReset);
   useEffect(() => { onResetRef.current = onReset; }, [onReset]);
   
+  const currentVideoUrlRef = useRef<string | null>(null);
+  const lastProcessedUrlRef = useRef<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  
+  // Use effect to sync state to ref for reliable access in event handlers
+  useEffect(() => {
+     currentVideoUrlRef.current = videoUrl;
+  }, [videoUrl]);
   const [isVideoLoading, setIsVideoLoading] = useState(false); 
   const [videoError, setVideoError] = useState<string | null>(null);
   
@@ -631,7 +632,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   }, [videoLayout, analysisState]);
 
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
-  const [isMuted, setIsMuted] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
 
   const fullLiftHistory = useRef<LiftMetrics[]>([]);
@@ -654,6 +655,166 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   useEffect(() => { onMetricsUpdateRef.current = onMetricsUpdate; }, [onMetricsUpdate]);
   useEffect(() => { onAnalysisCompleteRef.current = onAnalysisComplete; }, [onAnalysisComplete]);
   useEffect(() => { onAnalysisStartRef.current = onAnalysisStart; }, [onAnalysisStart]);
+
+  const updateVideoLayoutRef = useRef<() => void>();
+
+  const prepareVideoFile = async (file: File): Promise<string> => {
+      try {
+          const rawUrl = URL.createObjectURL(file);
+          return Promise.resolve(rawUrl);
+      } catch (e) {
+          console.error("[VideoLoad] CRITICAL ERROR generating Blob URL:", e);
+          throw e;
+      }
+  };
+
+  const handleVideoError = useCallback((e?: any) => {
+      console.error("[VideoLoad] CRITICAL ERROR: FAILED to decode or play video.");
+      if (videoRef.current?.error) {
+          console.error(`[VideoLoad] Video Error Code: ${videoRef.current.error.code}, Message: ${videoRef.current.error.message}`);
+      }
+      setVideoError("Format unsupported by this browser. If it is an iPhone .MOV (HEVC), try using Safari or changing iOS camera format to 'Most Compatible' (H.264).");
+      setIsVideoLoading(false);
+  }, []);
+
+  const handleCanPlay = useCallback(() => {
+      const currentUrl = currentVideoUrlRef.current;
+      if (!currentUrl || currentUrl === lastProcessedUrlRef.current) return;
+      
+      console.log("[VideoLoad] (12/18) handleCanPlay triggered (Video ready to play).");
+      setIsVideoLoading(false);
+      lastProcessedUrlRef.current = currentUrl;
+      
+      if (videoRef.current) {
+          const v = videoRef.current;
+          if (v.currentTime === 0) {
+              v.currentTime = 0.001;
+          }
+          
+          setTimeout(() => {
+              updateVideoLayoutRef.current?.();
+          }, 50);
+          
+          setTimeout(() => {
+              const hiddenVid = processingVideoRef.current;
+              if (hiddenVid && currentUrl && hiddenVid.src !== currentUrl) {
+                  try {
+                      hiddenVid.muted = true;
+                      hiddenVid.playsInline = true;
+                      hiddenVid.crossOrigin = "anonymous";
+                      hiddenVid.preload = "auto";
+                      hiddenVid.onloadedmetadata = () => {
+                          if (hiddenVid.videoWidth === 0) return;
+                      };
+                      hiddenVid.onloadeddata = () => {
+                          if (hiddenVid.currentTime === 0) hiddenVid.currentTime = 0.001;
+                      };
+                      hiddenVid.onerror = (e) => {
+                          if (!hiddenVid.src) return;
+                      };
+                      hiddenVid.src = currentUrl;
+                      hiddenVid.load();
+                  } catch (e) {}
+              }
+          }, 300);
+      }
+  }, []);
+
+  const updateVideoLayout = useCallback(() => {
+    if (videoRef.current && wrapperRef.current) {
+        const video = videoRef.current;
+        if (video.readyState >= 1 && !lastProcessedUrlRef.current) {
+            if (video.videoWidth > 0 && video.videoHeight > 0) {
+                handleCanPlay();
+            }
+        }
+        if (video.videoWidth === 0 || video.videoHeight === 0) {
+            setTimeout(() => updateVideoLayoutRef.current?.(), 500);
+            return;
+        }
+        const wrapper = wrapperRef.current;
+        const videoRect = video.getBoundingClientRect();
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const elementOffsetLeft = videoRect.left - wrapperRect.left;
+        const elementOffsetTop = videoRect.top - wrapperRect.top;
+        const videoRatio = video.videoWidth / video.videoHeight;
+        const elementRatio = videoRect.width / videoRect.height;
+        let renderWidth, renderHeight, internalTop, internalLeft;
+        if (videoRect.width > 0 && videoRect.height > 0 && video.videoWidth > 0) {
+            if (elementRatio > videoRatio) {
+                renderHeight = videoRect.height;
+                renderWidth = renderHeight * videoRatio;
+                internalTop = 0;
+                internalLeft = (videoRect.width - renderWidth) / 2;
+            } else {
+                renderWidth = videoRect.width;
+                renderHeight = renderWidth / videoRatio;
+                internalLeft = 0;
+                internalTop = (videoRect.height - renderHeight) / 2;
+            }
+        } else {
+            renderWidth = 0; renderHeight = 0; internalTop = 0; internalLeft = 0;
+        }
+        setVideoLayout({ width: renderWidth, height: renderHeight, top: elementOffsetTop + internalTop, left: elementOffsetLeft + internalLeft });
+    }
+  }, [handleCanPlay]);
+
+  useEffect(() => {
+    updateVideoLayoutRef.current = updateVideoLayout;
+  }, [updateVideoLayout]);
+
+  const togglePlay = useCallback(() => {
+      if (!videoRef.current) return;
+      if (videoRef.current.paused) {
+          const playPromise = videoRef.current.play();
+          if (playPromise !== undefined) {
+              playPromise.catch(() => setIsPlaying(false));
+          }
+          setIsPlaying(true);
+      } else {
+          videoRef.current.pause();
+          setIsPlaying(false);
+      }
+  }, []);
+
+  const changeSpeed = useCallback((speed: number) => {
+      setPlaybackSpeed(speed);
+      if (videoRef.current) {
+          try {
+              videoRef.current.playbackRate = speed;
+          } catch (e) {}
+      }
+  }, []);
+
+  const stepFrame = useCallback((direction: number) => {
+      if (!videoRef.current) return;
+      videoRef.current.pause();
+      setIsPlaying(false);
+      const frameTime = 1/30;
+      videoRef.current.currentTime = clamp(videoRef.current.currentTime + direction * frameTime, 0, videoRef.current.duration);
+  }, []);
+
+  const handleInternalUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+      console.log("[VideoLoad] (1/18) User selected a new file through internal upload input.");
+      if (e.target.files && e.target.files[0] && onFileSelect) {
+          onFileSelect(e.target.files[0]);
+          e.target.value = '';
+      }
+  }, [onFileSelect]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+        if (!videoRef.current || analysisState !== AnalysisState.COMPLETE) return;
+        if ([' ', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
+        switch(e.key) {
+            case ' ': case 'k': case 'K': togglePlay(); break;
+            case 'j': case 'J': case 'ArrowLeft': stepFrame(-1); break;
+            case 'l': case 'L': case 'ArrowRight': stepFrame(1); break;
+        }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [analysisState, togglePlay, stepFrame]);
 
   useEffect(() => {
     if (seekRequest && videoRef.current) {
@@ -766,11 +927,14 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
   useEffect(() => {
     if (videoFile && poseModel) {
+      console.log("[VideoLoad] (1/18) Starting load sequence for:", videoFile.name);
       setVideoError(null);
       setIsVideoLoading(true);
       setNormalizedROI(null);
       setAnalysisState(AnalysisState.IDLE);
       setProgress(0);
+      lastProcessedUrlRef.current = null;
+      currentVideoUrlRef.current = null;
       fullLiftHistory.current = [];
       compressedLiftHistory.current = [];
       renderCommandsRef.current = [];
@@ -785,53 +949,89 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       setIsPlaying(false);
 
       // --- INDUSTRIAL DECODER FLUSH PATTERN ---
-      // Resetting the elements explicitly prevents ghost states in Safari/Chrome HEVC decoders
       if (videoRef.current) {
+          console.log("[VideoLoad] (3/18) Resetting main video state...");
           videoRef.current.pause();
-          videoRef.current.src = "";
+          videoRef.current.removeAttribute('src');
           videoRef.current.load();
       }
       if (processingVideoRef.current) {
-          processingVideoRef.current.pause();
-          processingVideoRef.current.src = "";
-          processingVideoRef.current.load();
+          console.log("[VideoLoad] (3/18) Resetting hidden analysis video state...");
+          const hv = processingVideoRef.current;
+          hv.pause();
+          hv.removeAttribute('src');
+          hv.load();
+          hv.onloadedmetadata = null;
+          hv.onloadeddata = null;
+          hv.onerror = null;
       }
 
       let objectUrl: string | null = null;
+      console.log(`[VideoLoad] >>> NEW FILE DETECTED: ${videoFile.name}`);
+      
+      const isHEVC = videoFile.name.toLowerCase().endsWith('.mov') || videoFile.type === 'video/quicktime';
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
-      console.log(`[VideoLoad] Loading video file: ${videoFile.name} (${(videoFile.size / 1024 / 1024).toFixed(2)} MB), Type: ${videoFile.type}`);
+      console.log(`[VideoLoad] (4/18) Browser Check -> Type: ${videoFile.type}, HEVC: ${isHEVC}, Mobile: ${isMobile}`);
+
+      console.log("[VideoLoad] (5/18) Creating Blob URL...");
       prepareVideoFile(videoFile).then(url => {
-          console.log("[VideoLoad] URL created, setting up video elements...");
+          console.log("[VideoLoad] (6/18) Blob URL ready.");
           objectUrl = url;
-          setVideoUrl(url);
-          const hiddenVid = processingVideoRef.current;
-          try {
-              if (hiddenVid) {
-                  // Explicitly setting attributes before source application
-                  hiddenVid.muted = true;
-                  hiddenVid.playsInline = true;
-                  hiddenVid.crossOrigin = "anonymous";
-                  hiddenVid.preload = "auto";
-                  
-                  hiddenVid.src = url;
-                  
-                  // 🔥 iOS/Safari HEVC Decode Kickstart
-                  hiddenVid.onloadeddata = () => {
-                      if (hiddenVid.currentTime === 0) {
-                          hiddenVid.currentTime = 0.001;
-                      }
-                      console.log("[VideoLoad] Hidden analysis video ready state: ", hiddenVid.readyState);
-                  };
-
-                  hiddenVid.load(); 
-              }
-          } catch (e) {
-              console.warn("Could not setup hidden analysis video: ", e);
+          
+          // --- INDUSTRIAL PREROLL STRATEGY ---
+          // On mobile HEVC, we sometimes need to "prime" the decoder pipeline with a simple state
+          if (isHEVC && isMobile && videoRef.current) {
+              console.log("[VideoLoad] (7/18) [PREROLL] Priming HEVC decoder for mobile...");
+              // We don't actually need a separate file, just ensure the element is clean and ready.
+              videoRef.current.muted = true;
+              videoRef.current.playsInline = true;
           }
-          setIsVideoLoading(false);
+
+          console.log("[VideoLoad] (8/18) Setting videoUrl state.");
+          currentVideoUrlRef.current = url;
+          setVideoUrl(url);
+
+          // INDUSTRIAL WATCHDOG: THE HEVC KICKSTART
+          setTimeout(() => {
+              if (videoRef.current && isVideoLoading && !lastProcessedUrlRef.current) {
+                  console.log("[VideoLoad] [WATCHDOG] Decoder hang detected (3s timeout). Attempting force-wake...");
+                  
+                  const v = videoRef.current;
+                  v.muted = true;
+                  v.playsInline = true;
+                  
+                  // Force a metadata update if the browser is lazy
+                  if (v.readyState === 0 && v.src) {
+                      console.log("[VideoLoad] [WATCHDOG] readyState is 0. Re-loading...");
+                      v.load();
+                  }
+
+                  const promise = v.play();
+                  if (promise) {
+                      promise.then(() => {
+                          console.log("[VideoLoad] [WATCHDOG] Play success. Pausing and finalizing.");
+                          v.pause();
+                          v.currentTime = 0.001;
+                          handleCanPlay();
+                      }).catch((err) => {
+                          console.log("[VideoLoad] [WATCHDOG] Play failed, forcing layout via dimensions.");
+                          v.currentTime = 0.001;
+                          if (v.videoWidth > 0) {
+                             handleCanPlay();
+                          } else {
+                             updateVideoLayout(); // This will trigger the 0x0 retry logic
+                          }
+                      });
+                  } else {
+                      v.currentTime = 0.001;
+                      updateVideoLayout();
+                  }
+              }
+          }, 3500);
       }).catch(err => {
-          console.error("Video Prep Error:", err);
-          setVideoError("Could not load video. Format may be unsupported.");
+          console.error("[VideoLoad] CRITICAL ERROR:", err);
+          setVideoError("Could not load video.");
           setIsVideoLoading(false);
       });
 
@@ -839,88 +1039,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           if (objectUrl) URL.revokeObjectURL(objectUrl); 
       };
     }
-  }, [videoFile, poseModel]);
+  }, [videoFile, poseModel, handleCanPlay, updateVideoLayout]);
 
   // --- INDUSTRIAL KEYBOARD CONTROLS ---
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-        if (!videoRef.current || analysisState !== AnalysisState.COMPLETE) return;
-        
-        // Prevent scrolling with Space/Arrow keys
-        if ([' ', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-            e.preventDefault();
-        }
-
-        switch(e.key) {
-            case ' ': // Toggle Play
-            case 'k':
-            case 'K':
-                togglePlay();
-                break;
-            case 'j': // Rewind
-            case 'J':
-                stepFrame(-1);
-                break;
-            case 'l': // Forward
-            case 'L':
-                stepFrame(1);
-                break;
-            case 'ArrowLeft':
-                stepFrame(-1);
-                break;
-            case 'ArrowRight':
-                stepFrame(1);
-                break;
-        }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [analysisState, isPlaying]); // Depend on isPlaying to toggle correctly
-
-  const prepareVideoFile = async (file: File): Promise<string> => {
-      try {
-          const rawUrl = URL.createObjectURL(file);
-          return Promise.resolve(rawUrl);
-      } catch (e) {
-          console.error("[VideoLoad] CRITICAL ERROR generating Blob URL:", e);
-          throw e;
-      }
-  };
-
-  const updateVideoLayout = useCallback(() => {
-    if (videoRef.current && wrapperRef.current) {
-        const video = videoRef.current;
-        const wrapper = wrapperRef.current;
-        const videoRect = video.getBoundingClientRect();
-        const wrapperRect = wrapper.getBoundingClientRect();
-        const elementOffsetLeft = videoRect.left - wrapperRect.left;
-        const elementOffsetTop = videoRect.top - wrapperRect.top;
-        const videoRatio = video.videoWidth / video.videoHeight;
-        const elementRatio = videoRect.width / videoRect.height;
-
-        let renderWidth, renderHeight, internalTop, internalLeft;
-
-        // --- UPDATED FITTING LOGIC: MAXIMIZE SPACE ---
-        if (videoRect.width > 0 && videoRect.height > 0 && video.videoWidth > 0) {
-            if (elementRatio > videoRatio) {
-                renderHeight = videoRect.height;
-                renderWidth = renderHeight * videoRatio;
-                internalTop = 0;
-                internalLeft = (videoRect.width - renderWidth) / 2;
-            } else {
-                renderWidth = videoRect.width;
-                renderHeight = renderWidth / videoRatio;
-                internalLeft = 0;
-                internalTop = (videoRect.height - renderHeight) / 2;
-            }
-        } else {
-            renderWidth = 0; renderHeight = 0; internalTop = 0; internalLeft = 0;
-        }
-
-        setVideoLayout({ width: renderWidth, height: renderHeight, top: elementOffsetTop + internalTop, left: elementOffsetLeft + internalLeft });
-    }
-  }, []);
 
   useLayoutEffect(() => {
     window.addEventListener('resize', updateVideoLayout);
@@ -1686,121 +1807,89 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const rafIdRef = useRef<number | null>(null);
   const lastMetricsUpdateTimeRef = useRef<number>(0);
 
-  const renderFrameUpdates = useCallback(() => {
-     if (!videoRef.current || fullLiftHistory.current.length === 0) return;
-     const t = videoRef.current.currentTime;
-     
-     // Binary search for closest metric
-     const history = fullLiftHistory.current;
-     let left = 0, right = history.length - 1;
-     let closestIdx = 0;
-     while (left <= right) {
-         const mid = Math.floor((left + right) / 2);
-         if (parseFloat(history[mid].time) <= t) {
-             closestIdx = mid;
-             left = mid + 1;
-         } else {
-             right = mid - 1;
-         }
-     }
-     const closest = history[closestIdx];
+  const vec3BufferA = useRef(new Float64Array(3));
+  const vec3BufferB = useRef(new Float64Array(3));
 
-     // Binary search for raw frame
-     let rawFrame = null;
-     const rawData = rawDataRef.current;
-     if (rawData.length > 0) {
-         let rLeft = 0, rRight = rawData.length - 1;
-         let rawIdx = 0;
-         while (rLeft <= rRight) {
-             const mid = Math.floor((rLeft + rRight) / 2);
-             if (rawData[mid].time <= t) {
-                 rawIdx = mid;
-                 rLeft = mid + 1;
-             } else {
-                 rRight = mid - 1;
-             }
-         }
-         if (Math.abs(rawData[rawIdx].time - t) < 0.1) {
-             rawFrame = rawData[rawIdx];
-         }
-     }
-
-     drawOverlay(closest, closestIdx, rawFrame?.landmarks);
-
-     // Now that we use imperative DOM updates instead of React state, we can run at 30-60fps
-     const now = performance.now();
-     if (now - lastMetricsUpdateTimeRef.current > 33) {
-         onMetricsUpdateRef.current(closest, history);
-         lastMetricsUpdateTimeRef.current = now;
-     }
-
-     if (!videoRef.current.paused) {
-         if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
-             // @ts-ignore
-             rafIdRef.current = videoRef.current.requestVideoFrameCallback(renderFrameUpdates);
-         } else {
-             rafIdRef.current = requestAnimationFrame(renderFrameUpdates);
-         }
-     }
-  }, []);
-
-  const handleTimeUpdate = () => {
-    // Only used as fallback or when paused tracking (scrubbing)
-    if (videoRef.current && videoRef.current.paused) {
-       renderFrameUpdates();
-    }
-  };
-
-  const drawOverlay = (metric: LiftMetrics, currentIndex: number, landmarks?: Keypoint[]) => {
-      const overlayCanvas = canvasRef.current; const overlayCtx = overlayCanvas?.getContext('2d'); if (!overlayCanvas || !overlayCtx) return;
-      const pathCanvas = pathCanvasRef.current; const pathCtx = pathCanvas?.getContext('2d'); if (!pathCanvas || !pathCtx) return;
-      const w = overlayCanvas.width; const h = overlayCanvas.height; 
+  const drawOverlay = useCallback((metric: LiftMetrics, currentIndex: number, landmarks?: Keypoint[]) => {
+      const overlayCanvas = canvasRef.current; 
+      const overlayCtx = overlayCanvas?.getContext('2d', { alpha: true }); 
+      if (!overlayCanvas || !overlayCtx) return;
       
-      overlayCtx.clearRect(0,0,w,h);
+      const pathCanvas = pathCanvasRef.current; 
+      const pathCtx = pathCanvas?.getContext('2d', { alpha: true }); 
+      if (!pathCanvas || !pathCtx) return;
+      
+      const w = overlayCanvas.width; 
+      const h = overlayCanvas.height; 
+      
+      overlayCtx.clearRect(0, 0, w, h);
 
-      if (landmarks && window.drawConnectors && window.drawLandmarks) {
-         overlayCtx.save(); overlayCtx.globalAlpha = 0.5; 
-         window.drawConnectors(overlayCtx, landmarks, window.POSE_CONNECTIONS, { color: 'rgba(255,255,255,0.6)', lineWidth: 2 });
-         window.drawLandmarks(overlayCtx, landmarks, { color: '#ffffff', lineWidth: 1, radius: 2 });
-         overlayCtx.restore();
-         const fontSize = Math.max(12, w * 0.025); overlayCtx.font = `bold ${fontSize}px sans-serif`; overlayCtx.textBaseline = 'middle';
-         const drawBadge = (text: string, x: number, y: number, color: string) => {
-             const padding = 4; const metrics = overlayCtx.measureText(text); const bgW = metrics.width + padding * 2; const bgH = fontSize + padding * 2;
-             overlayCtx.save(); overlayCtx.fillStyle = 'rgba(0,0,0,0.7)'; overlayCtx.beginPath(); overlayCtx.roundRect(x, y - bgH/2, bgW, bgH, 4); overlayCtx.fill();
-             overlayCtx.fillStyle = color; overlayCtx.fillText(text, x + padding, y); overlayCtx.restore();
-         };
-         const kneeIdx = landmarks[25].visibility > landmarks[26].visibility ? 25 : 26;
-         if (landmarks[kneeIdx].visibility > 0.3) { const val = metric.kneeAngle; drawBadge(`K: ${val.toFixed(0)}°`, landmarks[kneeIdx].x * w + 15, landmarks[kneeIdx].y * h, '#facc15'); }
-         
-         const ankleIdx = landmarks[27].visibility > landmarks[28].visibility ? 27 : 28;
-         if (landmarks[ankleIdx].visibility > 0.3) {
-             const val = metric.ankleAngle || 0;
-             drawBadge(`A: ${val.toFixed(0)}°`, landmarks[ankleIdx].x * w + 15, landmarks[ankleIdx].y * h, '#10b981');
-         }
+      // --- SKELETON LAYER ---
+      if (landmarks && landmarks.length > 0 && window.drawConnectors && window.drawLandmarks) {
+          overlayCtx.save();
+          overlayCtx.globalAlpha = 0.4; 
+          window.drawConnectors(overlayCtx, landmarks, window.POSE_CONNECTIONS, { color: 'rgba(255,255,255,0.6)', lineWidth: 2 });
+          window.drawLandmarks(overlayCtx, landmarks, { color: '#ffffff', lineWidth: 1, radius: 2 });
+          overlayCtx.restore();
+          
+          const fontSize = Math.max(12, w * 0.025); 
+          overlayCtx.font = `bold ${fontSize}px sans-serif`; 
+          overlayCtx.textBaseline = 'middle';
 
-         const hipIdx = landmarks[23].visibility > landmarks[24].visibility ? 23 : 24;
-         if (landmarks[hipIdx].visibility > 0.3) { 
-             const val = metric.hipAngle; 
-             drawBadge(`H: ${val.toFixed(0)}°`, landmarks[hipIdx].x * w + 15, landmarks[hipIdx].y * h, '#60a5fa'); 
-             
-             // Back angle badge
-             const shoulderIdx = hipIdx - 12;
-             if (landmarks[shoulderIdx].visibility > 0.3) {
-                 const backAngle = metric.backAngle || 0;
-                 const midX = (landmarks[shoulderIdx].x + landmarks[hipIdx].x) / 2;
-                 const midY = (landmarks[shoulderIdx].y + landmarks[hipIdx].y) / 2;
-                 drawBadge(`B: ${backAngle.toFixed(0)}°`, midX * w + 15, midY * h, '#a78bfa');
-             }
-         }
+          const drawBadgeAtIdx = (idx: number, text: string, color: string) => {
+              if (!landmarks[idx] || landmarks[idx].visibility < 0.3) return;
+              const x = landmarks[idx].x * w + 15;
+              const y = landmarks[idx].y * h;
+              const padding = 4;
+              const metrics = overlayCtx.measureText(text);
+              const bgW = metrics.width + padding * 2;
+              const bgH = fontSize + padding * 2;
+              overlayCtx.save();
+              overlayCtx.fillStyle = 'rgba(0,0,0,0.8)';
+              overlayCtx.beginPath();
+              overlayCtx.roundRect(x, y - bgH/2, bgW, bgH, 4);
+              overlayCtx.fill();
+              overlayCtx.fillStyle = color;
+              overlayCtx.fillText(text, x + padding, y);
+              overlayCtx.restore();
+          };
+
+          const kneeIdx = (landmarks[25]?.visibility || 0) > (landmarks[26]?.visibility || 0) ? 25 : 26;
+          drawBadgeAtIdx(kneeIdx, `K: ${(metric.kneeAngle || 0).toFixed(0)}°`, '#facc15');
+          
+          const ankleIdx = (landmarks[27]?.visibility || 0) > (landmarks[28]?.visibility || 0) ? 27 : 28;
+          drawBadgeAtIdx(ankleIdx, `A: ${(metric.ankleAngle || 0).toFixed(0)}°`, '#10b981');
+
+          const hipIdx = (landmarks[23]?.visibility || 0) > (landmarks[24]?.visibility || 0) ? 23 : 24;
+          drawBadgeAtIdx(hipIdx, `H: ${(metric.hipAngle || 0).toFixed(0)}°`, '#60a5fa');
+          
+          if (landmarks[hipIdx] && landmarks[hipIdx - 12] && landmarks[hipIdx].visibility > 0.3 && landmarks[hipIdx - 12].visibility > 0.3) {
+              const shoulderIdx = hipIdx - 12;
+              const backAngle = metric.backAngle || 0;
+              const midX = ((landmarks[shoulderIdx].x + landmarks[hipIdx].x) / 2) * w + 15;
+              const midY = ((landmarks[shoulderIdx].y + landmarks[hipIdx].y) / 2) * h;
+              const text = `B: ${backAngle.toFixed(0)}°`;
+              const metrics = overlayCtx.measureText(text);
+              const bgW = metrics.width + 8;
+              const bgH = fontSize + 8;
+              overlayCtx.save();
+              overlayCtx.fillStyle = 'rgba(0,0,0,0.8)';
+              overlayCtx.beginPath();
+              overlayCtx.roundRect(midX, midY - bgH / 2, bgW, bgH, 4);
+              overlayCtx.fill();
+              overlayCtx.fillStyle = '#a78bfa';
+              overlayCtx.fillText(text, midX + 4, midY);
+              overlayCtx.restore();
+          }
       }
 
-      const zx = startXRef.current * w; const zy = startYRef.current * h;
-      
-      // 畫出對應 LiftChart 中虛線 (0,0 原點) 
+      // --- REFERENCE LINES ---
+      const zx = startXRef.current * w; 
+      const zy = startYRef.current * h;
       overlayCtx.setLineDash([4, 4]);
       overlayCtx.strokeStyle = 'rgba(34, 197, 94, 0.6)';
-      overlayCtx.lineWidth = 2;
-      
+      overlayCtx.lineWidth = 1;
+
       const currentIsDltConfirmed = isDltConfirmedRef.current;
       const currentHMatrix = hMatrixRef.current;
       const currentInvHMatrix = invHMatrixRef.current;
@@ -1810,76 +1899,56 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           const vH = processingVideoRef.current?.videoHeight || h;
           const zx_v = zx * vW / w; 
           const zy_v = zy * vH / h;
-          const virtStart = new Float64Array(3);
-          PerspectiveMath.multiplyMat3Vec3(virtStart, currentHMatrix, new Float64Array([zx_v, zy_v, 1]));
-          const vx = virtStart[0] / virtStart[2];
-          const vy = virtStart[1] / virtStart[2];
+          const v3A = vec3BufferA.current;
+          const v3B = vec3BufferB.current;
+          v3A[0] = zx_v; v3A[1] = zy_v; v3A[2] = 1;
+          PerspectiveMath.multiplyMat3Vec3(v3B, currentHMatrix, v3A);
+          const vx = v3B[0] / v3B[2];
+          const vy = v3B[1] / v3B[2];
 
-          const proj = (px: number, py: number) => {
-              const out = new Float64Array(3);
-              PerspectiveMath.multiplyMat3Vec3(out, currentInvHMatrix, new Float64Array([px, py, 1]));
-              return { x: (out[0] / out[2]) / vW * w, y: (out[1] / out[2]) / vH * h };
+          const projBuf = (px: number, py: number) => {
+              v3A[0] = px; v3A[1] = py; v3A[2] = 1;
+              PerspectiveMath.multiplyMat3Vec3(v3B, currentInvHMatrix, v3A);
+              return { x: (v3B[0] / v3B[2]) / vW * w, y: (v3B[1] / v3B[2]) / vH * h };
           };
 
-          // Y-axis (垂直於 DLT 平面)
-          const py1 = proj(vx, Math.max(-10000, vy - 5000));
-          const py2 = proj(vx, Math.min(10000, vy + 5000));
+          const py1 = projBuf(vx, Math.max(-10000, vy - 5000));
+          const py2 = projBuf(vx, Math.min(10000, vy + 5000));
           overlayCtx.beginPath(); overlayCtx.moveTo(py1.x, py1.y); overlayCtx.lineTo(py2.x, py2.y); overlayCtx.stroke();
-
-          // X-axis (平行於 DLT 平面)
-          const px1 = proj(Math.max(-10000, vx - 5000), vy);
-          const px2 = proj(Math.min(10000, vx + 5000), vy);
+          const px1 = projBuf(Math.max(-10000, vx - 5000), vy);
+          const px2 = projBuf(Math.min(10000, vx + 5000), vy);
           overlayCtx.beginPath(); overlayCtx.moveTo(px1.x, px1.y); overlayCtx.lineTo(px2.x, px2.y); overlayCtx.stroke();
       } else {
-          // 垂直與水平參考線
           overlayCtx.beginPath(); overlayCtx.moveTo(zx, 0); overlayCtx.lineTo(zx, h); overlayCtx.stroke();
           overlayCtx.beginPath(); overlayCtx.moveTo(0, zy); overlayCtx.lineTo(w, zy); overlayCtx.stroke();
       }
-      
-      // Reset line dash
       overlayCtx.setLineDash([]);
-      
-      // 起點標示 (原點)
       overlayCtx.beginPath(); overlayCtx.arc(zx, zy, 5, 0, 2*Math.PI); overlayCtx.fillStyle = '#22c55e'; overlayCtx.fill();
-    
 
-      // --- COMMERCIAL DESIGN: PERSISTENT PEAK MARKER ---
+      // --- PEAK INDICATOR ---
       if (peakDataRef.current) {
           const { x, y } = peakDataRef.current;
-          const px = x * w;
-          const py = y * h;
-          
+          const px = x * w; const py = y * h;
           overlayCtx.save();
-          overlayCtx.beginPath();
-          overlayCtx.strokeStyle = 'rgba(217, 70, 239, 0.6)';
-          overlayCtx.setLineDash([4, 2]);
-          overlayCtx.lineWidth = 1.5;
-          overlayCtx.arc(px, py, 12, 0, 2 * Math.PI);
-          overlayCtx.stroke();
-          
-          // Draw peak indicator text
-          overlayCtx.font = 'bold 10px sans-serif';
-          overlayCtx.fillStyle = '#d946ef';
-          overlayCtx.textBaseline = 'bottom';
-          overlayCtx.fillText('PEAK', px + 14, py - 4);
+          overlayCtx.shadowBlur = 4; overlayCtx.shadowColor = 'rgba(0,0,0,0.5)';
+          overlayCtx.beginPath(); overlayCtx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
+          overlayCtx.setLineDash([3, 2]); overlayCtx.lineWidth = 1.2;
+          overlayCtx.arc(px, py, 8, 0, 2 * Math.PI); overlayCtx.stroke();
+          overlayCtx.font = 'bold 9px sans-serif'; overlayCtx.fillStyle = '#ef4444';
+          overlayCtx.textBaseline = 'bottom'; overlayCtx.fillText('PEAK', px + 10, py - 4);
           overlayCtx.restore();
       }
 
-      // --- ADVANCED COMPRESSION RENDERING (LTS: LAYERED TIME-STATE ZERO-ALLOCATION) ---
+      // --- PATH RENDERING (LTS) ---
       const currentT = typeof metric.time === 'string' ? parseFloat(metric.time) : metric.time;
       const commands = renderCommandsRef.current;
-
       let targetIdx = 0;
       if (commands.length > 0) {
-          let left = 0, right = commands.length - 1;
-          while (left <= right) {
-              const mid = Math.floor((left + right) / 2);
-              if (commands[mid].time <= currentT) {
-                  targetIdx = mid;
-                  left = mid + 1;
-              } else {
-                  right = mid - 1;
-              }
+          let l = 0, r = commands.length - 1;
+          while (l <= r) {
+              const m = (l + r) >> 1;
+              if (commands[m].time <= currentT) { targetIdx = m; l = m + 1; }
+              else r = m - 1;
           }
       }
 
@@ -1888,177 +1957,162 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
       if (commands.length > 1 && targetIdx !== lastIdx) {
           pathCtx.lineWidth = 4; pathCtx.lineCap = 'round'; pathCtx.lineJoin = 'round';
-
           if (delta > 0 && delta <= 30 && lastIdx >= 0) {
-              // Incremental Draw
-              pathCtx.beginPath();
-              pathCtx.moveTo(commands[lastIdx].x * w, commands[lastIdx].y * h);
-              
+              pathCtx.beginPath(); pathCtx.moveTo(commands[lastIdx].x * w, commands[lastIdx].y * h);
               let lastColor = commands[lastIdx].color;
               for (let i = lastIdx + 1; i <= targetIdx; i++) {
-                  const cmd = commands[i];
-                  if (cmd.color !== lastColor) {
-                      pathCtx.strokeStyle = lastColor;
-                      pathCtx.stroke();
-                      pathCtx.beginPath();
-                      pathCtx.moveTo(commands[i-1].x * w, commands[i-1].y * h);
-                      lastColor = cmd.color;
+                  if (commands[i].color !== lastColor) {
+                      pathCtx.strokeStyle = lastColor; pathCtx.stroke();
+                      pathCtx.beginPath(); pathCtx.moveTo(commands[i-1].x * w, commands[i-1].y * h);
+                      lastColor = commands[i].color;
                   }
-                  pathCtx.lineTo(cmd.x * w, cmd.y * h);
+                  pathCtx.lineTo(commands[i].x * w, commands[i].y * h);
               }
-              pathCtx.strokeStyle = lastColor;
-              pathCtx.stroke();
+              pathCtx.strokeStyle = lastColor; pathCtx.stroke();
           } else if (delta < -2 || delta > 30 || lastIdx === -1) {
-              // Full redraw on seek
               pathCtx.clearRect(0, 0, w, h);
               if (targetIdx > 0) {
-                  pathCtx.beginPath();
-                  pathCtx.moveTo(commands[0].x * w, commands[0].y * h);
+                  pathCtx.beginPath(); pathCtx.moveTo(commands[0].x * w, commands[0].y * h);
                   let lastColor = commands[0].color;
                   for (let i = 1; i <= targetIdx; i++) {
-                      const cmd = commands[i];
-                      if (cmd.color !== lastColor) {
-                          pathCtx.strokeStyle = lastColor;
-                          pathCtx.stroke();
-                          pathCtx.beginPath();
-                          pathCtx.moveTo(commands[i-1].x * w, commands[i-1].y * h);
-                          lastColor = cmd.color;
+                      if (commands[i].color !== lastColor) {
+                          pathCtx.strokeStyle = lastColor; pathCtx.stroke();
+                          pathCtx.beginPath(); pathCtx.moveTo(commands[i-1].x * w, commands[i-1].y * h);
+                          lastColor = commands[i].color;
                       }
-                      pathCtx.lineTo(cmd.x * w, cmd.y * h);
+                      pathCtx.lineTo(commands[i].x * w, commands[i].y * h);
                   }
-                  pathCtx.strokeStyle = lastColor;
-                  pathCtx.stroke();
+                  pathCtx.strokeStyle = lastColor; pathCtx.stroke();
               }
           }
           lastRenderedIndexRef.current = targetIdx;
 
-          // --- COMMERCIAL DESIGN: REAL-TIME TRACKING BADGE ---
+          // --- FLOATING DATA BADGE (Real-time Overlay) ---
           const curPoint = commands[targetIdx];
           if (curPoint) {
-              const cx = curPoint.x * w;
-              const cy = curPoint.y * h;
-              
-              // Draw "Barbell Head"
-              overlayCtx.beginPath();
-              overlayCtx.arc(cx, cy, 7, 0, 2 * Math.PI);
-              overlayCtx.fillStyle = curPoint.color;
-              overlayCtx.fill();
-              overlayCtx.strokeStyle = 'white';
-              overlayCtx.lineWidth = 2;
-              overlayCtx.stroke();
+              const cx = curPoint.x * w; const cy = curPoint.y * h;
+              overlayCtx.beginPath(); overlayCtx.arc(cx, cy, 7, 0, 2 * Math.PI);
+              overlayCtx.fillStyle = curPoint.color; overlayCtx.fill();
+              overlayCtx.strokeStyle = 'white'; overlayCtx.lineWidth = 2; overlayCtx.stroke();
 
-              // Floating Power Value
               const pVal = metric.power || 0;
               if (pVal > 15) {
-                // drawBadge is scoped inside drawOverlay
-                const label = `${pVal.toFixed(0)}W`;
-                const padding = 4;
-                const fontSize = Math.max(11, w * 0.018);
-                overlayCtx.font = `bold ${fontSize}px sans-serif`;
-                const textMetrics = overlayCtx.measureText(label);
-                const bgW = textMetrics.width + padding * 2;
-                const bgH = fontSize + padding * 2;
-                
-                overlayCtx.save();
-                overlayCtx.fillStyle = 'rgba(0,0,0,0.85)';
-                overlayCtx.beginPath();
-                overlayCtx.roundRect(cx + 12, cy - bgH / 2, bgW, bgH, 4);
-                overlayCtx.fill();
-                overlayCtx.fillStyle = curPoint.color;
-                overlayCtx.fillText(label, cx + 12 + padding, cy + fontSize/2 - 2);
-                overlayCtx.restore();
+                 const label = `${pVal.toFixed(0)}W`;
+                 const fSize = Math.max(11, w * 0.018);
+                 overlayCtx.font = `bold ${fSize}px sans-serif`;
+                 const tm = overlayCtx.measureText(label);
+                 const bgW = tm.width + 10;
+                 const bgH = fSize + 8;
+                 overlayCtx.save();
+                 overlayCtx.fillStyle = 'rgba(0,0,0,0.85)';
+                 overlayCtx.beginPath(); overlayCtx.roundRect(cx + 12, cy - bgH / 2, bgW, bgH, 4); overlayCtx.fill();
+                 overlayCtx.fillStyle = curPoint.color;
+                 overlayCtx.fillText(label, cx + 17, cy + fSize/2 - 2);
+                 overlayCtx.restore();
               }
           }
       }
 
-      // Draw the "live" segment to the absolute current metric on the overlay so it updates at 60fps
-      if (commands.length > 0 && targetIdx >= 0 && targetIdx < commands.length) {
-          const cmd = commands[targetIdx];
-          if (currentT >= cmd.time) {
-              overlayCtx.beginPath();
-              overlayCtx.moveTo(cmd.x * w, cmd.y * h);
-              overlayCtx.lineTo(metric.x * w, metric.y * h);
-              overlayCtx.strokeStyle = cmd.color;
-              overlayCtx.lineWidth = 4; overlayCtx.lineCap = 'round'; overlayCtx.lineJoin = 'round';
-              overlayCtx.stroke();
-          }
-      }
-
-      const cx = metric.x * w; const cy = metric.y * h;
-      
-      // --- DLT Grid Background (FOOL-PROOF PERSISTENT LAYER) ---
+      // --- DLT GRID ---
       const currentDltPoints = dltPointsRef.current;
-      if (currentIsDltConfirmed && currentInvHMatrix) {
-          // If we are doing a full redraw, ensure the grid is there
-          if (delta < -2 || delta > 30 || lastIdx === -1) {
-              pathCtx.save();
-              const divs = 10;
-              const vW = processingVideoRef.current?.videoWidth || w;
-              const vH = processingVideoRef.current?.videoHeight || h;
-              
-              if (currentDltPoints.length === 4) {
-                  const srcPts = [
-                      currentDltPoints[0].x * vW, currentDltPoints[0].y * vH,
-                      currentDltPoints[1].x * vW, currentDltPoints[1].y * vH,
-                      currentDltPoints[2].x * vW, currentDltPoints[2].y * vH,
-                      currentDltPoints[3].x * vW, currentDltPoints[3].y * vH
-                  ];
-                  const dist = (x1: number, y1: number, x2: number, y2: number) => Math.hypot(x2 - x1, y2 - y1);
-                  const virtW = (dist(srcPts[0], srcPts[1], srcPts[2], srcPts[3]) + dist(srcPts[6], srcPts[7], srcPts[4], srcPts[5])) / 2;
-                  const virtH = (dist(srcPts[0], srcPts[1], srcPts[6], srcPts[7]) + dist(srcPts[2], srcPts[3], srcPts[4], srcPts[5])) / 2;
-                  const minX = Math.min(srcPts[0], srcPts[2], srcPts[4], srcPts[6]);
-                  const minY = Math.min(srcPts[1], srcPts[3], srcPts[5], srcPts[7]);
+      if (currentIsDltConfirmed && currentInvHMatrix && (delta < -2 || delta > 30 || lastIdx === -1)) {
+          pathCtx.save();
+          const divs = 10;
+          const vW = processingVideoRef.current?.videoWidth || w;
+          const vH = processingVideoRef.current?.videoHeight || h;
+          if (currentDltPoints.length === 4) {
+              const srcPts = [
+                  currentDltPoints[0].x * vW, currentDltPoints[0].y * vH,
+                  currentDltPoints[1].x * vW, currentDltPoints[1].y * vH,
+                  currentDltPoints[2].x * vW, currentDltPoints[2].y * vH,
+                  currentDltPoints[3].x * vW, currentDltPoints[3].y * vH
+              ];
+              const dist = (x1: number, y1: number, x2: number, y2: number) => Math.hypot(x2 - x1, y2 - y1);
+              const virtW = (dist(srcPts[0], srcPts[1], srcPts[2], srcPts[3]) + dist(srcPts[6], srcPts[7], srcPts[4], srcPts[5])) / 2;
+              const virtH = (dist(srcPts[0], srcPts[1], srcPts[6], srcPts[7]) + dist(srcPts[2], srcPts[3], srcPts[4], srcPts[5])) / 2;
+              const minX = Math.min(srcPts[0], srcPts[2], srcPts[4], srcPts[6]);
+              const minY = Math.min(srcPts[1], srcPts[3], srcPts[5], srcPts[7]);
 
-                  const proj = (vx: number, vy: number) => {
-                      const out = new Float64Array(3);
-                      PerspectiveMath.multiplyMat3Vec3(out, currentInvHMatrix, new Float64Array([vx, vy, 1]));
-                      return { x: (out[0] / out[2]) / vW * w, y: (out[1] / out[2]) / vH * h };
-                  };
+              const proj = (vx: number, vy: number) => {
+                  const outBuf = new Float64Array(3);
+                  PerspectiveMath.multiplyMat3Vec3(outBuf, currentInvHMatrix, new Float64Array([vx, vy, 1]));
+                  return { x: (outBuf[0] / outBuf[2]) / vW * w, y: (outBuf[1] / outBuf[2]) / vH * h };
+              };
 
-                  pathCtx.strokeStyle = '#00e5ff';
-                  pathCtx.setLineDash([]);
-                  
-                  // Draw outer bounding box perfectly matching the 4 points
-                  pathCtx.globalAlpha = 0.8;
-                  pathCtx.lineWidth = 2;
-                  const pTL = proj(minX, minY); const pTR = proj(minX + virtW, minY);
-                  const pBR = proj(minX + virtW, minY + virtH); const pBL = proj(minX, minY + virtH);
-                  pathCtx.beginPath();
-                  pathCtx.moveTo(pTL.x, pTL.y); pathCtx.lineTo(pTR.x, pTR.y);
-                  pathCtx.lineTo(pBR.x, pBR.y); pathCtx.lineTo(pBL.x, pBL.y);
-                  pathCtx.closePath();
-                  pathCtx.stroke();
-
-                  // Draw internal Y-axis and X-axis lines (dashed)
-                  pathCtx.globalAlpha = 0.5;
-                  pathCtx.lineWidth = 1;
-                  pathCtx.setLineDash([4, 4]); // Dashed lines
-                  
-                  // Horizontal (Y axis divisions)
-                  for (let i = 1; i < divs; i++) {
-                      const stepY = minY + i * (virtH / divs);
-                      const p1h = proj(minX, stepY); 
-                      const p2h = proj(minX + virtW, stepY);
-                      pathCtx.beginPath(); pathCtx.moveTo(p1h.x, p1h.y); pathCtx.lineTo(p2h.x, p2h.y); pathCtx.stroke();
-                  }
-                  
-                  // Vertical (X axis divisions)
-                  for (let i = 1; i < divs; i++) {
-                      const stepX = minX + i * (virtW / divs);
-                      const p1v = proj(stepX, minY); 
-                      const p2v = proj(stepX, minY + virtH);
-                      pathCtx.beginPath(); pathCtx.moveTo(p1v.x, p1v.y); pathCtx.lineTo(p2v.x, p2v.y); pathCtx.stroke();
-                  }
-                  
-                  pathCtx.setLineDash([]); // Reset to solid lines for subsequent drawing
+              pathCtx.strokeStyle = '#00e5ff'; pathCtx.globalAlpha = 0.5; pathCtx.lineWidth = 1; pathCtx.setLineDash([4, 4]);
+              for (let i = 1; i < divs; i++) {
+                  const sY = minY + i * (virtH / divs); const p1h = proj(minX, sY); const p2h = proj(minX + virtW, sY);
+                  pathCtx.beginPath(); pathCtx.moveTo(p1h.x, p1h.y); pathCtx.lineTo(p2h.x, p2h.y); pathCtx.stroke();
+                  const sX = minX + i * (virtW / divs); const p1v = proj(sX, minY); const p2v = proj(sX, minY + virtH);
+                  pathCtx.beginPath(); pathCtx.moveTo(p1v.x, p1v.y); pathCtx.lineTo(p2v.x, p2v.y); pathCtx.stroke();
               }
-              pathCtx.restore();
+              pathCtx.setLineDash([]);
           }
+          pathCtx.restore();
       }
 
-      overlayCtx.beginPath(); overlayCtx.arc(cx, cy, 8, 0, 2*Math.PI); overlayCtx.fillStyle = '#facc15'; overlayCtx.strokeStyle = 'rgba(0,0,0,0.5)'; overlayCtx.lineWidth = 2; overlayCtx.fill(); overlayCtx.stroke();
-      const devCm = (metric.x - startXRef.current) * 200; const devX = cx + 20; const devY = cy;
-      overlayCtx.save(); overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.7)'; overlayCtx.roundRect(devX - 4, devY - 10, 60, 20, 4); overlayCtx.fill(); overlayCtx.fillStyle = devCm > 0 ? '#ef4444' : '#10b981'; overlayCtx.font = 'bold 12px monospace'; overlayCtx.fillText(`${devCm > 0 ? '+' : ''}${devCm.toFixed(1)}cm`, devX, devY + 4); overlayCtx.restore();
+      // --- CURRENT POINT & VELOCITY LABEL ---
+      const cx = metric.x * w; const cy = metric.y * h;
+      overlayCtx.beginPath(); overlayCtx.arc(cx, cy, 8, 0, 2 * Math.PI); 
+      overlayCtx.fillStyle = '#facc15'; overlayCtx.strokeStyle = 'rgba(0,0,0,0.5)'; 
+      overlayCtx.lineWidth = 2; overlayCtx.fill(); overlayCtx.stroke();
+      
+      const devCm = (metric.x - startXRef.current) * 200;
+      overlayCtx.save(); 
+      overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.7)'; 
+      overlayCtx.roundRect(cx + 12, cy - 10, 60, 20, 4); 
+      overlayCtx.fill(); 
+      overlayCtx.fillStyle = devCm > 0 ? '#ef4444' : '#10b981'; 
+      overlayCtx.font = 'bold 12px monospace'; 
+      overlayCtx.fillText(`${devCm > 0 ? '+' : ''}${devCm.toFixed(1)}cm`, cx + 16, cy + 4); 
+      overlayCtx.restore();
+  }, []);
+
+  const renderFrameUpdates = useCallback(() => {
+      if (!videoRef.current || fullLiftHistory.current.length === 0) return;
+      const t = videoRef.current.currentTime;
+      
+      const history = fullLiftHistory.current;
+      let closestIdx = 0, l = 0, r = history.length - 1;
+      while (l <= r) {
+          const m = (l + r) >> 1;
+          if (parseFloat(history[m].time) <= t) { closestIdx = m; l = m + 1; }
+          else r = m - 1;
+      }
+      const closest = history[closestIdx];
+
+      let rawFrame = null;
+      const rawData = rawDataRef.current;
+      if (rawData.length > 0) {
+          let rawIdx = 0, rl = 0, rr = rawData.length - 1;
+          while (rl <= rr) {
+              const m = (rl + rr) >> 1;
+              if (rawData[m].time <= t) { rawIdx = m; rl = m + 1; }
+              else rr = m - 1;
+          }
+          if (Math.abs(rawData[rawIdx].time - t) < 0.15) rawFrame = rawData[rawIdx];
+      }
+
+      drawOverlay(closest, closestIdx, rawFrame?.landmarks);
+
+      const now = performance.now();
+      if (now - lastMetricsUpdateTimeRef.current > 66) {
+          onMetricsUpdateRef.current(closest, history);
+          lastMetricsUpdateTimeRef.current = now;
+      }
+
+      if (videoRef.current && !videoRef.current.paused) {
+          if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+              // @ts-ignore
+              rafIdRef.current = videoRef.current.requestVideoFrameCallback(renderFrameUpdates);
+          } else {
+              rafIdRef.current = requestAnimationFrame(renderFrameUpdates);
+          }
+      }
+  }, [drawOverlay]);
+
+  const handleTimeUpdate = () => {
+    if (videoRef.current && videoRef.current.paused) renderFrameUpdates();
   };
 
   useEffect(() => {
@@ -2068,43 +2122,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     return () => resizeObserver.disconnect();
   }, [videoUrl, updateVideoLayout]);
 
-  const shouldShowInteractionArea = (isSelectingROI || isSelectingDLT || (normalizedROI && analysisState !== AnalysisState.COMPLETE));
-  
-  let interactionCursorClass = 'pointer-events-none';
-  if (isSelectingROI || (isSelectingDLT && dltPoints.length < 4)) {
-      interactionCursorClass = 'cursor-crosshair';
-  } else if (isSelectingDLT && dltPoints.length === 4) {
-      interactionCursorClass = draggingDltIndex !== null ? 'cursor-grabbing' : 'auto';
-  }
-  
-  const handleInternalUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (e.target.files && e.target.files[0] && onFileSelect) {
-          onFileSelect(e.target.files[0]);
-          e.target.value = '';
-      }
-  };
-
-  const handleVideoError = () => {
-      console.error("[VideoLoad] FAILED to decode or play video. This usually means an unsupported codec or corrupted file.");
-      setVideoError("Format unsupported by this browser. If it is an iPhone .MOV, try using Safari or changing iOS camera format to 'Most Compatible'.");
-      setIsVideoLoading(false);
-  };
-
-  const handleCanPlay = () => {
-      setIsVideoLoading(false);
-      
-      if (videoRef.current) {
-          const v = videoRef.current;
-          console.log(`[VideoLoad] SUCCESS: Format is playable. Resolution: ${v.videoWidth}x${v.videoHeight}, Duration: ${v.duration.toFixed(2)}s`);
-
-          // 1. iOS Safari MOV黑畫面修正
-          if (videoRef.current.currentTime === 0) {
-              videoRef.current.currentTime = 0.001;
-          }
-      }
-  };
-
-  // --- NEW: Playback Control Functions ---
+  // --- INDUSTRIAL GRADE PERFORMANCE: RENDERING LOOP & SPEED SYNC ---
   useEffect(() => {
     if (videoRef.current) {
         try {
@@ -2141,54 +2159,18 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
      };
   }, [isPlaying, renderFrameUpdates]);
 
-  const togglePlay = () => {
-      if (!videoRef.current) return;
-      if (videoRef.current.paused) {
-          const playPromise = videoRef.current.play();
-          if (playPromise !== undefined) {
-              playPromise.catch((error) => {
-                  console.warn("Video play interrupted:", error);
-                  setIsPlaying(false);
-              });
-          }
-          setIsPlaying(true);
-      } else {
-          videoRef.current.pause();
-          setIsPlaying(false);
-      }
-  };
-
-  const changeSpeed = (speed: number) => {
-      setPlaybackSpeed(speed);
-      if (videoRef.current) {
-          try {
-              videoRef.current.playbackRate = speed;
-          } catch (e) {
-              console.warn("Could not set playbackRate: ", e);
-          }
-      }
-  };
-
-  const stepFrame = (direction: number) => {
-      if (!videoRef.current) return;
-      videoRef.current.pause();
-      setIsPlaying(false);
-      // Industrial standard: approx 1 frame at 30fps = 0.033s
-      try {
-          videoRef.current.currentTime += direction * 0.033;
-      } catch (e) {
-          console.warn("Could not step frame: ", e);
-      }
-  };
+  const shouldShowInteractionArea = (isSelectingROI || isSelectingDLT || (normalizedROI && analysisState !== AnalysisState.COMPLETE));
+  
+  let interactionCursorClass = 'pointer-events-none';
+  if (isSelectingROI || (isSelectingDLT && dltPoints.length < 4)) {
+      interactionCursorClass = 'cursor-crosshair';
+  } else if (isSelectingDLT && dltPoints.length === 4) {
+      interactionCursorClass = draggingDltIndex !== null ? 'cursor-grabbing' : 'auto';
+  }
 
   return (
     <div ref={containerRef} className="relative w-full h-full flex items-center justify-center bg-zinc-950 p-0 overflow-hidden select-none group min-h-0 min-w-0">
-      {isVideoLoading ? (
-         <div className="flex flex-col items-center justify-center gap-4">
-             <div className="w-12 h-12 border-4 border-zinc-600 border-t-yellow-500 rounded-full animate-spin"></div>
-             <p className="text-zinc-400 text-sm animate-pulse">Preparing Video...</p>
-         </div>
-      ) : videoError ? (
+      {videoError ? (
          <div className="text-center p-6 bg-zinc-900 rounded-xl border border-red-900/50">
              <div className="text-red-500 font-bold mb-2">Video Error</div>
              <p className="text-zinc-400 text-xs mb-4">{videoError}</p>
@@ -2202,7 +2184,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           <video
             ref={videoRef}
             src={videoUrl}
-            className={`w-full h-full object-contain block ${analysisState === AnalysisState.ANALYZING ? 'opacity-30' : ''}`}
+            className={`w-full h-full object-contain block ${analysisState === AnalysisState.ANALYZING || isVideoLoading ? 'opacity-30' : ''}`}
             style={{ transform: 'translateZ(0)', willChange: 'transform' }}
             // Remove default controls to use custom industrial controls
             controls={false}
@@ -2213,11 +2195,20 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             onError={handleVideoError}
             onCanPlay={handleCanPlay}
             onLoadedData={handleCanPlay}
+            onPlaying={handleCanPlay}
+            onWaiting={() => console.log("[VideoLoad] Device waiting for data...")}
+            onStalled={() => console.log("[VideoLoad] Video stalled (Decoder busy?)")}
             onLoadedMetadata={updateVideoLayout}
             onPlay={updateVideoLayout} 
             onEnded={() => setIsPlaying(false)}
             crossOrigin="anonymous"
           />
+          {isVideoLoading && (
+             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-zinc-950/80 z-50 rounded-lg backdrop-blur-sm pointer-events-none">
+                 <div className="w-12 h-12 border-4 border-zinc-600 border-t-yellow-500 rounded-full animate-spin"></div>
+                 <p className="text-yellow-500 font-bold text-xs tracking-widest animate-pulse border border-yellow-500/50 bg-black/50 px-3 py-1 rounded">INITIALIZING DECODER</p>
+             </div>
+          )}
           
           <canvas ref={pathCanvasRef} className="absolute pointer-events-none z-10" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, transform: 'translateZ(0)', willChange: 'transform' }} width={videoLayout.width} height={videoLayout.height} />
           <canvas ref={canvasRef} className="absolute pointer-events-none z-20" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, transform: 'translateZ(0)', willChange: 'transform' }} width={videoLayout.width} height={videoLayout.height} />
@@ -2659,6 +2650,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             </>
           )}
 
+        </div>
+      ) : isVideoLoading ? (
+        <div className="flex flex-col items-center justify-center gap-4">
+            <div className="w-12 h-12 border-4 border-zinc-600 border-t-yellow-500 rounded-full animate-spin"></div>
+            <p className="text-zinc-400 text-sm animate-pulse tracking-widest">PREPARING MEDIA...</p>
         </div>
       ) : (
         <label className="flex flex-col items-center justify-center w-full h-full cursor-pointer hover:bg-zinc-900/50 transition-colors group">
