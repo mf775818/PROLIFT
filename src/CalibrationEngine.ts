@@ -1,6 +1,6 @@
 import { Point3D, BoundingBox, Perspective, CalibrationResult } from "./types";
-import { CalibrationEngine as HPCCalibration } from "./src/lib/hpc/CalibrationEngine";
-import { ProjectiveMathHPC } from "./src/lib/hpc/ProjectiveMathHPC";
+import { CalibrationEngine as HPCCalibration } from "./lib/hpc/CalibrationEngine";
+import { ProjectiveMathHPC } from "./lib/hpc/ProjectiveMathHPC";
 
 /**
  * ProLift AI 工業級空間校正引擎 (Industrial-Grade Calibration Engine)

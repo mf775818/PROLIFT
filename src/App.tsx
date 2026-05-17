@@ -1,10 +1,9 @@
 
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { createRoot } from 'react-dom/client';
 import { VideoAnalyzer } from './components/VideoAnalyzer';
 import { LiftChart } from './components/LiftChart';
 import { LiftMetrics } from './types';
-import { OnsetDetectorHPC } from './src/lib/hpc/OnsetDetectorHPC';
+import { OnsetDetectorHPC } from './lib/hpc/OnsetDetectorHPC';
 
 // --- UX COMPONENT: RESIZER HANDLE ---
 const Resizer = ({ orientation, onResizeStart, isResizing }: { orientation: 'vertical' | 'horizontal', onResizeStart: (e: React.MouseEvent | React.TouchEvent) => void, isResizing: boolean }) => {
@@ -695,19 +694,4 @@ const App = () => {
   );
 };
 
-// --- MOUNTING LOGIC (INDUSTRIAL GRADE) ---
-const init = () => {
-  const container = document.getElementById('root');
-  if (container) {
-      const root = createRoot(container);
-      root.render(<App />);
-  } else {
-      console.error("Critical Error: #root element not found in DOM.");
-  }
-};
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
-}
+export default App;

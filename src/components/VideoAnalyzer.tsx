@@ -1,13 +1,13 @@
 
 import React, { useEffect, useRef, useState, useCallback, useLayoutEffect } from 'react';
 import { LiftMetrics, PoseResult, AnalysisState, Keypoint } from '../types';
-import { PerspectiveMath } from '../src/lib/hpc/PerspectiveMath';
-import { TrackingBuffer } from '../src/lib/hpc/TrackingBuffer';
-import { CalibrationEngineHPC } from '../src/lib/hpc/CalibrationEngineHPC';
-import { DepthCalibratorHPC } from '../src/lib/hpc/DepthCalibratorHPC';
-import { PhysicsEngineHPC } from '../src/lib/hpc/PhysicsEngineHPC';
-import { KalmanSmoother1D } from '../src/lib/hpc/KalmanSmoother';
-import { OnsetDetectorHPC } from '../src/lib/hpc/OnsetDetectorHPC';
+import { PerspectiveMath } from '../lib/hpc/PerspectiveMath';
+import { TrackingBuffer } from '../lib/hpc/TrackingBuffer';
+import { CalibrationEngineHPC } from '../lib/hpc/CalibrationEngineHPC';
+import { DepthCalibratorHPC } from '../lib/hpc/DepthCalibratorHPC';
+import { PhysicsEngineHPC } from '../lib/hpc/PhysicsEngineHPC';
+import { KalmanSmoother1D } from '../lib/hpc/KalmanSmoother';
+import { OnsetDetectorHPC } from '../lib/hpc/OnsetDetectorHPC';
 
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
@@ -52,6 +52,100 @@ const calculateAngle = (a: Keypoint, b: Keypoint, c: Keypoint): number => {
   const magSq2 = v2x * v2x + v2y * v2y;
   if (magSq1 === 0 || magSq2 === 0) return 0;
   return (Math.acos(dot / Math.sqrt(magSq1 * magSq2)) * 180.0) / Math.PI;
+};
+
+// --- COMPONENT: INDUSTRIAL MAGNIFIER LENS ---
+const MagnifierLens: React.FC<{
+  videoRef: React.RefObject<HTMLVideoElement>;
+  x: number;
+  y: number;
+  visible: boolean;
+  videoLayout: VideoLayout;
+}> = ({ videoRef, x, y, visible, videoLayout }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!visible || !videoRef.current) {
+        if (rafRef.current) cancelAnimationFrame(rafRef.current);
+        return;
+    }
+
+    const draw = () => {
+      const canvas = canvasRef.current;
+      const video = videoRef.current;
+      if (!canvas || !video) return;
+
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) return;
+
+      const zoom = 2.0;
+      const size = canvas.width;
+      
+      const vW = video.videoWidth;
+      const vH = video.videoHeight;
+      if (vW === 0 || vH === 0) return;
+
+      const sourceSize = size / zoom;
+      const sourceX = x * vW - sourceSize / 2;
+      const sourceY = y * vH - sourceSize / 2;
+
+      ctx.imageSmoothingEnabled = false;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, size, size);
+      
+      ctx.drawImage(
+        video,
+        sourceX, sourceY, sourceSize, sourceSize,
+        0, 0, size, size
+      );
+
+      // Precision Reticle
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, size / 2); ctx.lineTo(size, size / 2);
+      ctx.moveTo(size / 2, 0); ctx.lineTo(size / 2, size);
+      ctx.stroke();
+
+      // Outer Rim
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, 0, size, size);
+
+      rafRef.current = requestAnimationFrame(draw);
+    };
+
+    draw();
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [visible, videoRef, x, y]);
+
+  if (!visible) return null;
+
+  // Offset placement to avoid covering the pointer
+  const offsetY = y < 0.3 ? 120 : -200;
+
+  return (
+    <div 
+      className="absolute z-[200] pointer-events-none shadow-[0_0_50px_rgba(0,0,0,0.8)] rounded-xl overflow-hidden border-2 border-white/30 bg-black animate-in zoom-in-75 duration-100 ease-out"
+      style={{
+        left: `calc(${x * 100}% - 75px)`,
+        top: `calc(${y * 100}% + ${offsetY}px)`,
+        width: '150px',
+        height: '150px',
+      }}
+    >
+      <canvas 
+        ref={canvasRef}
+        width={150}
+        height={150}
+        className="w-full h-full"
+      />
+      <div className="absolute top-1 left-1 bg-black/70 px-1.5 py-0.5 rounded text-[9px] text-yellow-400 font-black tracking-widest border border-yellow-400/30 uppercase">Precision x2.0</div>
+    </div>
+  );
 };
 
 const calculateAngleToHorizontal = (a: Keypoint, b: Keypoint): number => {
@@ -556,7 +650,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   useEffect(() => {
     // Initialize Worker with true real-time Sab capabilities
     try {
-        const worker = new Worker(new URL('../src/workers/metrics.worker.ts', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('../workers/metrics.worker.ts', import.meta.url), { type: 'module' });
         metricsWorkerRef.current = worker;
         console.log("[Worker] Metrics pipeline initialized.");
     } catch (e) {
@@ -599,6 +693,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const [invHMatrix, setInvHMatrix] = useState<Float64Array | null>(null);
   const invHMatrixRef = useRef<Float64Array | null>(null);
 
+  const [draggingDltIndex, setDraggingDltIndex] = useState<number | null>(null);
+  const [showMagnifier, setShowMagnifier] = useState(false);
+  const [magnifierCoords, setMagnifierCoords] = useState<{x: number, y: number}>({x: 0, y: 0});
+
   useEffect(() => {
     isDltConfirmedRef.current = isDltConfirmed;
     hMatrixRef.current = hMatrix;
@@ -606,7 +704,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     dltPointsRef.current = dltPoints;
   }, [isDltConfirmed, hMatrix, invHMatrix, dltPoints]);
 
-  const [draggingDltIndex, setDraggingDltIndex] = useState<number | null>(null);
   const [normalizedROI, setNormalizedROI] = useState<NormalizedRect | null>(null);
   const [dragStart, setDragStart] = useState<{x: number, y: number} | null>(null);
   const [videoLayout, setVideoLayout] = useState<VideoLayout>({ width: 0, height: 0, top: 0, left: 0 });
@@ -1082,7 +1179,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           if (dltPoints.length === 4) {
               // 已經有4點，檢查是否點擊在任何一個點附近以進行拖曳
               let foundIdx = -1;
-              const threshold = 20; // pixels
+              const threshold = 30; // pixels, slightly larger for better touch interaction
               for (let i = 0; i < 4; i++) {
                   const px = dltPoints[i].x * videoLayout.width;
                   const py = dltPoints[i].y * videoLayout.height;
@@ -1097,12 +1194,24 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
               if (foundIdx !== -1) {
                   setDraggingDltIndex(foundIdx);
+                  setMagnifierCoords(dltPoints[foundIdx]);
+                  setShowMagnifier(true);
               }
               return;
           }
 
           const newPts = [...dltPoints, coords];
           setDltPoints(newPts);
+          setMagnifierCoords(coords);
+          setShowMagnifier(true);
+          
+          // Auto-hide magnifier after a short delay if just placing a point
+          setTimeout(() => {
+              setDraggingDltIndex(curr => {
+                  if (curr === null) setShowMagnifier(false);
+                  return curr;
+              });
+          }, 800);
           return;
       }
 
@@ -1113,13 +1222,37 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   };
 
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
-      if (isSelectingDLT && draggingDltIndex !== null) {
+      if (isSelectingDLT) {
           const coords = getCoordinates(e);
-          setDltPoints(prev => {
-              const newPts = [...prev];
-              newPts[draggingDltIndex] = coords;
-              return newPts;
-          });
+          if (draggingDltIndex !== null) {
+              setDltPoints(prev => {
+                  const newPts = [...prev];
+                  newPts[draggingDltIndex] = coords;
+                  return newPts;
+              });
+              setMagnifierCoords(coords);
+              setShowMagnifier(true);
+          } else {
+              // Hover effect for desktop
+              if (!('touches' in e)) {
+                  let foundIdx = -1;
+                  const threshold = 30;
+                  for (let i = 0; i < dltPoints.length; i++) {
+                      const px = dltPoints[i].x * videoLayout.width;
+                      const py = dltPoints[i].y * videoLayout.height;
+                      const ex = coords.x * videoLayout.width;
+                      const ey = coords.y * videoLayout.height;
+                      const dist = Math.hypot(px - ex, py - ey);
+                      if (dist < threshold) { foundIdx = i; break; }
+                  }
+                  if (foundIdx !== -1) {
+                      setMagnifierCoords(dltPoints[foundIdx]);
+                      setShowMagnifier(true);
+                  } else {
+                      setShowMagnifier(false);
+                  }
+              }
+          }
           return;
       }
 
@@ -1151,6 +1284,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const handlePointerUp = () => {
       if (isSelectingDLT && draggingDltIndex !== null) {
           setDraggingDltIndex(null);
+          setShowMagnifier(false);
       }
       setDragStart(null);
   };
@@ -1914,7 +2048,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
           // --- VIRTUAL PLANE AXES (PERSPECTIVE) ---
           overlayCtx.save();
-          overlayCtx.strokeStyle = 'rgba(34, 197, 94, 0.8)'; 
+          overlayCtx.strokeStyle = 'rgba(34, 197, 94, 0.9)'; // Increased opacity for better visibility
+          overlayCtx.lineWidth = 1.5; // Slightly thicker
           // Y-Axis (Vertical in DLT space) - MUST PASS THROUGH THE ORIGIN POINT
           const py1 = projBuf(vx, vy - 10000);
           const py2 = projBuf(vx, vy + 10000);
@@ -2392,6 +2527,16 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                           )}
                           <div className="absolute -top-6 left-0 bg-yellow-500 text-black text-[10px] font-bold px-1 whitespace-nowrap">TRACKING TARGET</div>
                       </div>
+                  )}
+
+                  {isSelectingDLT && analysisState === AnalysisState.IDLE && (
+                      <MagnifierLens 
+                        videoRef={videoRef} 
+                        x={magnifierCoords.x} 
+                        y={magnifierCoords.y} 
+                        visible={showMagnifier} 
+                        videoLayout={videoLayout}
+                      />
                   )}
               </div>
           )}

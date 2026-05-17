@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { OnsetDetectorHPC } from '../src/lib/hpc/OnsetDetectorHPC';
+import { OnsetDetectorHPC } from '../lib/hpc/OnsetDetectorHPC';
 import {
   LineChart,
   Line,
