@@ -696,6 +696,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const invHMatrixRef = useRef<Float64Array | null>(null);
 
   const [draggingDltIndex, setDraggingDltIndex] = useState<number | null>(null);
+  const [draggingDltEdge, setDraggingDltEdge] = useState<number | null>(null);
+  const lastDltDragCoordsRef = useRef<{x: number, y: number} | null>(null);
   const [showMagnifier, setShowMagnifier] = useState(false);
   const [magnifierCoords, setMagnifierCoords] = useState<{x: number, y: number}>({x: 0, y: 0});
 
@@ -1198,6 +1200,29 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                   setDraggingDltIndex(foundIdx);
                   setMagnifierCoords(dltPoints[foundIdx]);
                   setShowMagnifier(true);
+                  return;
+              }
+
+              // 如果沒有點到端點，檢查是否點擊邊線中點進行平移(Panning)
+              let foundEdgeIdx = -1;
+              for (let i = 0; i < 4; i++) {
+                  const p1 = dltPoints[i];
+                  const p2 = dltPoints[(i + 1) % 4];
+                  const mx = (p1.x + p2.x) / 2 * videoLayout.width;
+                  const my = (p1.y + p2.y) / 2 * videoLayout.height;
+                  const ex = coords.x * videoLayout.width;
+                  const ey = coords.y * videoLayout.height;
+                  const dist = Math.hypot(mx - ex, my - ey);
+                  if (dist < threshold) {
+                      foundEdgeIdx = i;
+                      break;
+                  }
+              }
+
+              if (foundEdgeIdx !== -1) {
+                  setDraggingDltEdge(foundEdgeIdx);
+                  lastDltDragCoordsRef.current = coords;
+                  setShowMagnifier(false);
               }
               return;
           }
@@ -1225,6 +1250,21 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
               });
               setMagnifierCoords(coords);
               setShowMagnifier(true);
+          } else if (draggingDltEdge !== null && lastDltDragCoordsRef.current) {
+              const dx = coords.x - lastDltDragCoordsRef.current.x;
+              const dy = coords.y - lastDltDragCoordsRef.current.y;
+              setDltPoints(prev => {
+                  const newPts = [...prev];
+                  const idx1 = draggingDltEdge;
+                  const idx2 = (draggingDltEdge + 1) % 4;
+                  
+                  // Clamp changes so they don't drag things off screen ideally, but allowing plain dragging for now
+                  newPts[idx1] = { x: newPts[idx1].x + dx, y: newPts[idx1].y + dy };
+                  newPts[idx2] = { x: newPts[idx2].x + dx, y: newPts[idx2].y + dy };
+                  return newPts;
+              });
+              lastDltDragCoordsRef.current = coords;
+              setShowMagnifier(false);
           } else if (dltPoints.length === 4) {
               // Hover effect for desktop
               if (!('touches' in e)) {
@@ -1280,6 +1320,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       if (isSelectingDLT && draggingDltIndex !== null) {
           setDraggingDltIndex(null);
           setShowMagnifier(false);
+      }
+      if (isSelectingDLT && draggingDltEdge !== null) {
+          setDraggingDltEdge(null);
+          lastDltDragCoordsRef.current = null;
       }
       setDragStart(null);
   };
@@ -2331,7 +2375,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   if (isSelectingROI || (isSelectingDLT && dltPoints.length < 4)) {
       interactionCursorClass = 'cursor-crosshair';
   } else if (isSelectingDLT && dltPoints.length === 4) {
-      interactionCursorClass = draggingDltIndex !== null ? 'cursor-grabbing' : 'auto';
+      interactionCursorClass = (draggingDltIndex !== null || draggingDltEdge !== null) ? 'cursor-grabbing' : 'auto';
   }
 
   return (
@@ -2399,9 +2443,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                                       x1={prev.x * videoLayout.width} y1={prev.y * videoLayout.height}
                                       x2={p.x * videoLayout.width} y2={p.y * videoLayout.height}
                                       stroke={isDltConfirmed ? "#00e5ff" : "#f59e0b"}
-                                      strokeWidth="1.5"
+                                      strokeWidth={isSelectingDLT && draggingDltEdge === i - 1 ? "4" : "1.5"}
                                       strokeDasharray="4 4"
-                                      opacity="0.6"
+                                      opacity={isSelectingDLT && draggingDltEdge === i - 1 ? "1" : "0.6"}
                                   />
                               );
                           })}
@@ -2411,9 +2455,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                                   x1={dltPoints[3].x * videoLayout.width} y1={dltPoints[3].y * videoLayout.height}
                                   x2={dltPoints[0].x * videoLayout.width} y2={dltPoints[0].y * videoLayout.height}
                                   stroke={isDltConfirmed ? "#00e5ff" : "#f59e0b"}
-                                  strokeWidth="1.5"
+                                  strokeWidth={isSelectingDLT && draggingDltEdge === 3 ? "4" : "1.5"}
                                   strokeDasharray="4 4"
-                                  opacity="0.6"
+                                  opacity={isSelectingDLT && draggingDltEdge === 3 ? "1" : "0.6"}
                               />
                           )}
 
@@ -2426,6 +2470,24 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                                   strokeDasharray={isDltConfirmed ? "none" : "4 4"}
                               />
                           )}
+
+                          {/* Edge dragging handles */}
+                          {isSelectingDLT && dltPoints.length === 4 && dltPoints.map((p, i) => {
+                              const next = dltPoints[(i + 1) % 4];
+                              const mx = (p.x + next.x) / 2 * videoLayout.width;
+                              const my = (p.y + next.y) / 2 * videoLayout.height;
+                              return (
+                                  <g key={`mid-${i}`}>
+                                      <rect
+                                          x={mx - 6} y={my - 6}
+                                          width="12" height="12"
+                                          fill={isDltConfirmed ? "#00e5ff" : "#fcd34d"}
+                                          opacity="0.8"
+                                          rx="2"
+                                      />
+                                  </g>
+                              );
+                          })}
 
                           {/* --- 3D Sagittal Grid Projection --- */}
                           {isDltConfirmed && invHMatrix && (
