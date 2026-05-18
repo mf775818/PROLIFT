@@ -4,26 +4,18 @@
  */
 
 export class PerspectiveMath {
-    private static readonly A = new Float64Array(64);
-    private static readonly B = new Float64Array(8);
-    private static readonly X = new Float64Array(8);
-    private static readonly srcNormMap = new Float64Array(8);
-    private static readonly dstNormMap = new Float64Array(8);
-    private static readonly temp_mat = new Float64Array(9);
-    private static readonly T = new Float64Array(9);
-    private static readonly T_prime = new Float64Array(9);
-    private static readonly T_prime_inv = new Float64Array(9);
-    private static readonly H_norm = new Float64Array(9);
+    private readonly A = new Float64Array(64);
+    private readonly B = new Float64Array(8);
+    private readonly X = new Float64Array(8);
+    private readonly srcNormMap = new Float64Array(8);
+    private readonly dstNormMap = new Float64Array(8);
+    private readonly temp_mat = new Float64Array(9);
+    private readonly T = new Float64Array(9);
+    private readonly T_prime = new Float64Array(9);
+    private readonly T_prime_inv = new Float64Array(9);
+    private readonly H_norm = new Float64Array(9);
 
-    /**
-     * Multiplies a 3x3 matrix by a 3D vector. 
-     * Output is written to the provided `out` array to avoid allocation.
-     * 
-     * @param out Float64Array[3] - The target array for the result
-     * @param m Float64Array[9] - The 3x3 transformation matrix
-     * @param v Float64Array[3] - The 3D vector to transform
-     */
-    public static multiplyMat3Vec3(out: Float64Array, m: Float64Array, v: Float64Array): void {
+    public multiplyMat3Vec3(out: Float64Array, m: Float64Array, v: Float64Array): void {
         const x = v[0];
         const y = v[1];
         const z = v[2];
@@ -33,10 +25,7 @@ export class PerspectiveMath {
         out[2] = m[6] * x + m[7] * y + m[8] * z;
     }
 
-    /**
-     * Multiplies two 3x3 matrices: out = a * b
-     */
-    public static multiplyMat3Mat3(out: Float64Array, a: Float64Array, b: Float64Array): void {
+    public multiplyMat3Mat3(out: Float64Array, a: Float64Array, b: Float64Array): void {
         const a00 = a[0], a01 = a[1], a02 = a[2];
         const a10 = a[3], a11 = a[4], a12 = a[5];
         const a20 = a[6], a21 = a[7], a22 = a[8];
@@ -58,15 +47,7 @@ export class PerspectiveMath {
         out[8] = a20 * b02 + a21 * b12 + a22 * b22;
     }
 
-    /**
-     * Inverts a 3x3 matrix in-place or into an output buffer.
-     * Includes protection against singular matrices.
-     * 
-     * @param out Float64Array[9] - Output inverted matrix
-     * @param m Float64Array[9] - Input matrix
-     * @returns boolean - True if successful, False if matrix is singular (non-invertible)
-     */
-    public static invertMat3(out: Float64Array, m: Float64Array): boolean {
+    public invertMat3(out: Float64Array, m: Float64Array): boolean {
         const m00 = m[0], m01 = m[1], m02 = m[2];
         const m10 = m[3], m11 = m[4], m12 = m[5];
         const m20 = m[6], m21 = m[7], m22 = m[8];
@@ -92,10 +73,7 @@ export class PerspectiveMath {
         return true;
     }
 
-    /**
-     * Hartley's Isotropic Normalization.
-     */
-    private static normalizePoints(pts: number[], normPts: Float64Array, T: Float64Array): void {
+    private normalizePoints(pts: number[], normPts: Float64Array, T: Float64Array): void {
         let cx = 0, cy = 0;
         for (let i = 0; i < 4; i++) {
             cx += pts[i * 2];
@@ -123,11 +101,7 @@ export class PerspectiveMath {
         }
     }
 
-    /**
-     * Calculates the 3x3 Homography matrix using DLT with Hartley normalization.
-     * Zero-allocation guarantee.
-     */
-    public static calculateHomography(out: Float64Array, srcPts: number[], dstPts: number[]): boolean {
+    public calculateHomography(out: Float64Array, srcPts: number[], dstPts: number[]): boolean {
         if (srcPts.length !== 8 || dstPts.length !== 8) return false;
 
         this.normalizePoints(srcPts, this.srcNormMap, this.T);

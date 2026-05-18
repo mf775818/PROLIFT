@@ -10,6 +10,7 @@ export class ProjectiveMathHPC {
     private tempMatrix: Float64Array = new Float64Array(9);
     private trueLeftCenter = new Float64Array(3);
     private trueRightCenter = new Float64Array(3);
+    private perspectiveMath = new PerspectiveMath();
     
     /**
      * 從 2D 橢圓 (槓鈴片) 計算真實的 3D 物理投影中心
@@ -26,12 +27,12 @@ export class ProjectiveMathHPC {
         vanishingLine: Float64Array
     ): boolean {
         // 1. 求橢圓矩陣的反矩陣 Q^(-1)
-        const invertible = PerspectiveMath.invertMat3(this.tempMatrix, conicMatrixQ);
+        const invertible = this.perspectiveMath.invertMat3(this.tempMatrix, conicMatrixQ);
         if (!invertible) return false;
 
         // 2. 極點公式 p = Q^(-1) * l
         // 將反矩陣乘上消失線，直接得到真實的投影中心
-        PerspectiveMath.multiplyMat3Vec3(outCenter, this.tempMatrix, vanishingLine);
+        this.perspectiveMath.multiplyMat3Vec3(outCenter, this.tempMatrix, vanishingLine);
 
         // 3. 齊次座標正規化 (Homogeneous Normalization)
         // 避免 w = 0 的無窮遠點 (理論上中心不會在無窮遠)
@@ -56,7 +57,7 @@ export class ProjectiveMathHPC {
         conicMatrixQ: Float64Array,
         pole: Float64Array
     ): void {
-        PerspectiveMath.multiplyMat3Vec3(outLine, conicMatrixQ, pole);
+        this.perspectiveMath.multiplyMat3Vec3(outLine, conicMatrixQ, pole);
     }
 
     // 虛擬範例：在每一幀處理時修正 TrackingBuffer

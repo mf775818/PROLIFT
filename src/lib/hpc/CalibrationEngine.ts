@@ -12,6 +12,8 @@ export class CalibrationEngine {
     // Intermediate working memory for applyTransform (avoid allocations)
     private readonly vec3In = new Float64Array(3);
     private readonly vec3Out = new Float64Array(3);
+    
+    private readonly perspectiveMath = new PerspectiveMath();
 
     /**
      * Set up perspective calibration.
@@ -23,7 +25,7 @@ export class CalibrationEngine {
     public calibrate(srcPts: number[], dstPts: number[]): boolean {
         if (srcPts.length !== 8 || dstPts.length !== 8) return false;
 
-        const success = PerspectiveMath.calculateHomography(this.H, srcPts, dstPts);
+        const success = this.perspectiveMath.calculateHomography(this.H, srcPts, dstPts);
         if (!success) {
             // Fallback to Identity if singular
             this.H.set([
@@ -50,7 +52,7 @@ export class CalibrationEngine {
         this.vec3In[1] = imageY;
         this.vec3In[2] = 1.0;
 
-        PerspectiveMath.multiplyMat3Vec3(this.vec3Out, this.H, this.vec3In);
+        this.perspectiveMath.multiplyMat3Vec3(this.vec3Out, this.H, this.vec3In);
 
         // Normalize by Z (Perspective Division)
         const zOut = this.vec3Out[2];

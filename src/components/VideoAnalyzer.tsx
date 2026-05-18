@@ -14,6 +14,7 @@ import { AnkleKinematicsHPC } from '../lib/hpc/AnkleKinematicsHPC';
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
 let g_cv: any = null;
+const perspectiveMath = new PerspectiveMath();
 
 interface VideoAnalyzerProps {
   videoFile: File | null;
@@ -1735,6 +1736,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const calibration = new CalibrationEngineHPC();
     const depthCalibrator = new DepthCalibratorHPC();
     const ankleEngine = new AnkleKinematicsHPC();
+    const spineEngine = new SpineKinematicsHPC();
 
     // === 🐒C++++ 插入：DLT 無因次透視矩陣計算 ===
     let hMatrix = new Float64Array([1,0,0, 0,1,0, 0,0,1]); // 預設單位矩陣
@@ -1774,7 +1776,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             minX, minY + h
         ];
         
-        let success = PerspectiveMath.calculateHomography(hMatrix, srcPts, dstPts);
+        let success = perspectiveMath.calculateHomography(hMatrix, srcPts, dstPts);
 
         // --- 工業級 DLT 仿射比例還原補償 (Anisotropic Aspect Ratio Compensation) ---
         // 解決 45度角拍攝時，就算校正了平面，X軸 (深度方向) 依然維持原像素壓縮而導致位移低估的問題。
@@ -1793,10 +1795,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             const ct = new Float64Array(3); const cb = new Float64Array(3);
             const cl = new Float64Array(3); const cr = new Float64Array(3);
             
-            PerspectiveMath.multiplyMat3Vec3(ct, hMatrix, topPt);
-            PerspectiveMath.multiplyMat3Vec3(cb, hMatrix, btmPt);
-            PerspectiveMath.multiplyMat3Vec3(cl, hMatrix, leftPt);
-            PerspectiveMath.multiplyMat3Vec3(cr, hMatrix, rightPt);
+            perspectiveMath.multiplyMat3Vec3(ct, hMatrix, topPt);
+            perspectiveMath.multiplyMat3Vec3(cb, hMatrix, btmPt);
+            perspectiveMath.multiplyMat3Vec3(cl, hMatrix, leftPt);
+            perspectiveMath.multiplyMat3Vec3(cr, hMatrix, rightPt);
 
             const plateDLTHeight = Math.abs((cb[1] / cb[2]) - (ct[1] / ct[2]));
             const plateDLTWidth = Math.abs((cr[0] / cr[2]) - (cl[0] / cl[2]));
@@ -1820,7 +1822,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                     minX + w, minY + h,
                     minX, minY + h
                 ];
-                success = PerspectiveMath.calculateHomography(hMatrix, srcPts, dstPts);
+                success = perspectiveMath.calculateHomography(hMatrix, srcPts, dstPts);
             }
         }
 
@@ -1841,8 +1843,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
              
              const correctedTop = new Float64Array(3);
              const correctedBtm = new Float64Array(3);
-             PerspectiveMath.multiplyMat3Vec3(correctedTop, hMatrix, topPt);
-             PerspectiveMath.multiplyMat3Vec3(correctedBtm, hMatrix, btmPt);
+             perspectiveMath.multiplyMat3Vec3(correctedTop, hMatrix, topPt);
+             perspectiveMath.multiplyMat3Vec3(correctedBtm, hMatrix, btmPt);
              
              const hTopY = correctedTop[1] / correctedTop[2];
              const hBtmY = correctedBtm[1] / correctedBtm[2];
@@ -1869,8 +1871,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                  
                  const ct = new Float64Array(3);
                  const cb = new Float64Array(3);
-                 PerspectiveMath.multiplyMat3Vec3(ct, hMatrix, tVec);
-                 PerspectiveMath.multiplyMat3Vec3(cb, hMatrix, bVec);
+                 perspectiveMath.multiplyMat3Vec3(ct, hMatrix, tVec);
+                 perspectiveMath.multiplyMat3Vec3(cb, hMatrix, bVec);
                  
                  topY = ct[1] / ct[2];
                  btmY = cb[1] / cb[2];
@@ -1906,7 +1908,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             facingHint: calibFacingHint
         } : null;
 
-        const backAngleRaw = SpineKinematicsHPC.calculateBackAngle(frame.landmarks, dltEngineAdapter);
+        const backAngleRaw = spineEngine.calculateBackAngle(frame.landmarks, dltEngineAdapter);
         const ankleAngleRaw = ankleEngine.calculateAnkleAngle(frame.landmarks, dltEngineAdapter);
 
         // 將 normalized (0~1) 轉為像素坐標
@@ -2161,13 +2163,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           const v3A = vec3BufferA.current;
           const v3B = vec3BufferB.current;
           v3A[0] = zx_v; v3A[1] = zy_v; v3A[2] = 1;
-          PerspectiveMath.multiplyMat3Vec3(v3B, currentHMatrix, v3A);
+          perspectiveMath.multiplyMat3Vec3(v3B, currentHMatrix, v3A);
           const vx = v3B[0] / v3B[2];
           const vy = v3B[1] / v3B[2];
 
           const projBuf = (px: number, py: number) => {
               v3A[0] = px; v3A[1] = py; v3A[2] = 1;
-              PerspectiveMath.multiplyMat3Vec3(v3B, currentInvHMatrix, v3A);
+              perspectiveMath.multiplyMat3Vec3(v3B, currentInvHMatrix, v3A);
               return { x: (v3B[0] / v3B[2]) / vW * w, y: (v3B[1] / v3B[2]) / vH * h };
           };
 
@@ -2286,7 +2288,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
               const proj = (vx: number, vy: number) => {
                   const outBuf = new Float64Array(3);
-                  PerspectiveMath.multiplyMat3Vec3(outBuf, currentInvHMatrix, new Float64Array([vx, vy, 1]));
+                  perspectiveMath.multiplyMat3Vec3(outBuf, currentInvHMatrix, new Float64Array([vx, vy, 1]));
                   return { x: (outBuf[0] / outBuf[2]) / vW * w, y: (outBuf[1] / outBuf[2]) / vH * h };
               };
 
@@ -2655,7 +2657,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
                                           const project = (vx: number, vy: number) => {
                                               const out = new Float64Array(3);
-                                              PerspectiveMath.multiplyMat3Vec3(out, invHMatrix!, new Float64Array([vx, vy, 1]));
+                                              perspectiveMath.multiplyMat3Vec3(out, invHMatrix!, new Float64Array([vx, vy, 1]));
                                               return {
                                                   x: (out[0] / out[2]) / vW * videoLayout.width,
                                                   y: (out[1] / out[2]) / vH * videoLayout.height
@@ -2832,11 +2834,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                                       ];
 
                                       const hMat = new Float64Array(9);
-                                      const success = PerspectiveMath.calculateHomography(hMat, srcPts, dstPts);
+                                      const success = perspectiveMath.calculateHomography(hMat, srcPts, dstPts);
                                       if (success) {
                                           setHMatrix(hMat);
                                           const inv = new Float64Array(9);
-                                          if (PerspectiveMath.invertMat3(inv, hMat)) {
+                                          if (perspectiveMath.invertMat3(inv, hMat)) {
                                               setInvHMatrix(inv);
                                           }
                                       }
