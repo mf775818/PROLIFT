@@ -8,6 +8,8 @@ import { DepthCalibratorHPC } from '../lib/hpc/DepthCalibratorHPC';
 import { PhysicsEngineHPC } from '../lib/hpc/PhysicsEngineHPC';
 import { KalmanSmoother1D } from '../lib/hpc/KalmanSmoother';
 import { OnsetDetectorHPC } from '../lib/hpc/OnsetDetectorHPC';
+import { SpineKinematicsHPC } from '../lib/hpc/SpineKinematicsHPC';
+import { AnkleKinematicsHPC } from '../lib/hpc/AnkleKinematicsHPC';
 
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
@@ -1608,6 +1610,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const trackingBuffer = new TrackingBuffer(n);
     const calibration = new CalibrationEngineHPC();
     const depthCalibrator = new DepthCalibratorHPC();
+    const ankleEngine = new AnkleKinematicsHPC();
 
     // === 🐒C++++ 插入：DLT 無因次透視矩陣計算 ===
     let hMatrix = new Float64Array([1,0,0, 0,1,0, 0,0,1]); // 預設單位矩陣
@@ -1755,28 +1758,20 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         // Calculate raw angles for smoothing
         const kneeAngleRaw = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
         const hipAngleRaw = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
-        const ankleAngleRaw = calculateAngle(frame.landmarks[25], frame.landmarks[27], frame.landmarks[31]);
         
         // --- 🐒C++++ 手術刀調整：DLT 背角同步校正 ---
         // 當 DLT 啟用時，應以此平面校正後的 X 軸作為水平基準進行同步計算
-        let backAngleRaw = 0;
-        if (isDltConfirmed && dltPoints.length === 4) {
-            const sh = frame.landmarks[11];
-            const hp = frame.landmarks[23];
-            const sVec = new Float64Array([sh.x * canvasW, sh.y * canvasH, 1]);
-            const hVec = new Float64Array([hp.x * canvasW, hp.y * canvasH, 1]);
-            const sDst = new Float64Array(3);
-            const hDst = new Float64Array(3);
-            PerspectiveMath.multiplyMat3Vec3(sDst, hMatrix, sVec);
-            PerspectiveMath.multiplyMat3Vec3(hDst, hMatrix, hVec);
-            
-            // 使用 DLT 校正後的座標計算背角，此時 DLT 空間的 X 軸即為物理水平基準
-            const pS = { x: sDst[0]/sDst[2], y: sDst[1]/sDst[2], visibility: 1 };
-            const pH = { x: hDst[0]/hDst[2], y: hDst[1]/hDst[2], visibility: 1 };
-            backAngleRaw = calculateAngleToHorizontal(pS, pH);
-        } else {
-            backAngleRaw = calculateAngleToHorizontal(frame.landmarks[11], frame.landmarks[23]);
-        }
+        const dltEngineAdapter = (isDltConfirmed && dltPoints.length === 4) ? {
+            applyTransform: (out: Float64Array | Float32Array, x: number, y: number) => {
+                // VideoAnalyzer 內的 dlt 計算期望傳入 pixel values (即 x*canvasW, y*canvasH) 以符合 hMatrix
+                calibration.applyTransform(out, x * canvasW, y * canvasH);
+                // 再從像素轉回正規化座標或保留 pixel 都可以，不過 SpineKinematicsHPC 在乎的是 dy/dx 比例
+                // 這裡我們直接傳回 hMatrix 轉換後的 x, y
+            }
+        } : null;
+
+        const backAngleRaw = SpineKinematicsHPC.calculateBackAngle(frame.landmarks, dltEngineAdapter);
+        const ankleAngleRaw = ankleEngine.calculateAnkleAngle(frame.landmarks, dltEngineAdapter);
 
         // 將 normalized (0~1) 轉為像素坐標
         // 因為後續物理引擎需要 Y 向上，我們在此處先將 Y 翻轉: (1 - y) * canvasH

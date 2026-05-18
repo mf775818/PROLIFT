@@ -18,6 +18,20 @@ export class CalibrationEngineHPC {
   }
 
   /**
+   * 將單一點轉換到真實物理空間
+   */
+  public applyTransform(out: Float64Array | Float32Array, x: number, y: number): void {
+    const m = this.homographyMatrix;
+    const nx = m[0] * x + m[1] * y + m[2];
+    const ny = m[3] * x + m[4] * y + m[5];
+    const w  = m[6] * x + m[7] * y + m[8];
+
+    const invW = w !== 0 ? 1.0 / w : 1.0;
+    out[0] = nx * invW;
+    out[1] = ny * invW;
+  }
+
+  /**
    * 批次轉換：將整個 Buffer 的點位在 O(N) 內完成三維校正
    * 方法論：Data-Oriented Design, Loop Unrolling
    */
