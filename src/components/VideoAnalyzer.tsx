@@ -697,6 +697,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
   const [draggingDltIndex, setDraggingDltIndex] = useState<number | null>(null);
   const [draggingDltEdge, setDraggingDltEdge] = useState<number | null>(null);
+  const [parallelDltEdge, setParallelDltEdge] = useState<number | null>(null);
   const lastDltDragCoordsRef = useRef<{x: number, y: number} | null>(null);
   const [showMagnifier, setShowMagnifier] = useState(false);
   const [magnifierCoords, setMagnifierCoords] = useState<{x: number, y: number}>({x: 0, y: 0});
@@ -1253,16 +1254,55 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           } else if (draggingDltEdge !== null && lastDltDragCoordsRef.current) {
               const dx = coords.x - lastDltDragCoordsRef.current.x;
               const dy = coords.y - lastDltDragCoordsRef.current.y;
+              
+              const idx1 = draggingDltEdge;
+              const idx2 = (draggingDltEdge + 1) % 4;
+              const oppIdx1 = (draggingDltEdge + 3) % 4;
+              const oppIdx2 = (draggingDltEdge + 2) % 4;
+
+              const vOppX = dltPoints[oppIdx2].x - dltPoints[oppIdx1].x;
+              const vOppY = dltPoints[oppIdx2].y - dltPoints[oppIdx1].y;
+              const lenOpp = Math.hypot(vOppX, vOppY);
+
+              const pCur1 = { x: dltPoints[idx1].x + dx, y: dltPoints[idx1].y + dy };
+              const pCur2 = { x: dltPoints[idx2].x + dx, y: dltPoints[idx2].y + dy };
+
+              const vCurX = pCur2.x - pCur1.x;
+              const vCurY = pCur2.y - pCur1.y;
+              const lenCur = Math.hypot(vCurX, vCurY);
+
+              let snapP1 = pCur1;
+              let snapP2 = pCur2;
+
+              if (lenOpp > 1e-5 && lenCur > 1e-5) {
+                  const dot = (vCurX * vOppX + vCurY * vOppY) / (lenCur * lenOpp);
+                  const angleDiff = Math.acos(Math.max(-1, Math.min(1, Math.abs(dot))));
+                  
+                  const snapThreshold = 0.05; // radians (about 2.8 degrees)
+                  if (angleDiff < snapThreshold) {
+                      const mx = (pCur1.x + pCur2.x) / 2;
+                      const my = (pCur1.y + pCur2.y) / 2;
+                      
+                      let nx = vOppX / lenOpp;
+                      let ny = vOppY / lenOpp;
+                      if (dot < 0) {
+                          nx = -nx;
+                          ny = -ny;
+                      }
+
+                      snapP1 = { x: mx - nx * (lenCur / 2), y: my - ny * (lenCur / 2) };
+                      snapP2 = { x: mx + nx * (lenCur / 2), y: my + ny * (lenCur / 2) };
+                  }
+              }
+
               setDltPoints(prev => {
                   const newPts = [...prev];
-                  const idx1 = draggingDltEdge;
-                  const idx2 = (draggingDltEdge + 1) % 4;
-                  
                   // Clamp changes so they don't drag things off screen ideally, but allowing plain dragging for now
-                  newPts[idx1] = { x: newPts[idx1].x + dx, y: newPts[idx1].y + dy };
-                  newPts[idx2] = { x: newPts[idx2].x + dx, y: newPts[idx2].y + dy };
+                  newPts[idx1] = snapP1;
+                  newPts[idx2] = snapP2;
                   return newPts;
               });
+              
               lastDltDragCoordsRef.current = coords;
               setShowMagnifier(false);
           } else if (dltPoints.length === 4) {
@@ -1323,9 +1363,49 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       }
       if (isSelectingDLT && draggingDltEdge !== null) {
           setDraggingDltEdge(null);
+          setParallelDltEdge(null);
           lastDltDragCoordsRef.current = null;
       }
       setDragStart(null);
+  };
+
+  const handleDltEdgeDoubleClick = (edgeIdx: number) => {
+      if (!isSelectingDLT || dltPoints.length !== 4) return;
+      
+      setDltPoints(prev => {
+          if (prev.length !== 4) return prev;
+          const newPts = [...prev];
+          const idx1 = edgeIdx;
+          const idx2 = (edgeIdx + 1) % 4;
+          const oppIdx1 = (edgeIdx + 3) % 4;
+          const oppIdx2 = (edgeIdx + 2) % 4;
+
+          const vOppX = newPts[oppIdx2].x - newPts[oppIdx1].x;
+          const vOppY = newPts[oppIdx2].y - newPts[oppIdx1].y;
+          const lenOpp = Math.hypot(vOppX, vOppY);
+
+          const vCurX = newPts[idx2].x - newPts[idx1].x;
+          const vCurY = newPts[idx2].y - newPts[idx1].y;
+          const lenCur = Math.hypot(vCurX, vCurY);
+
+          if (lenOpp > 1e-5 && lenCur > 1e-5) {
+              const mx = (newPts[idx1].x + newPts[idx2].x) / 2;
+              const my = (newPts[idx1].y + newPts[idx2].y) / 2;
+              
+              let nx = vOppX / lenOpp;
+              let ny = vOppY / lenOpp;
+              
+              const dot = (vCurX * vOppX + vCurY * vOppY) / (lenCur * lenOpp);
+              if (dot < 0) {
+                  nx = -nx;
+                  ny = -ny;
+              }
+
+              newPts[idx1] = { x: mx - nx * (lenCur / 2), y: my - ny * (lenCur / 2) };
+              newPts[idx2] = { x: mx + nx * (lenCur / 2), y: my + ny * (lenCur / 2) };
+          }
+          return newPts;
+      });
   };
 
   const toggleROISelection = () => {
@@ -2450,37 +2530,71 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                           {dltPoints.map((p, i) => {
                               if (i === 0) return null;
                               const prev = dltPoints[i-1];
+                              const edgeIdx = i - 1;
+                              const isGreen = dltPoints.length === 4 && (() => {
+                                  let oppIdx = (edgeIdx + 2) % 4;
+                                  let oppLen = Math.hypot(dltPoints[(oppIdx+1)%4].x - dltPoints[oppIdx].x, dltPoints[(oppIdx+1)%4].y - dltPoints[oppIdx].y);
+                                  let curLen = Math.hypot(p.x - prev.x, p.y - prev.y);
+                                  if (oppLen < 1e-5 || curLen < 1e-5) return false;
+                                  let vx = p.x - prev.x; let vy = p.y - prev.y;
+                                  let ox = dltPoints[(oppIdx+1)%4].x - dltPoints[oppIdx].x;
+                                  let oy = dltPoints[(oppIdx+1)%4].y - dltPoints[oppIdx].y;
+                                  let dot = (vx*ox + vy*oy) / (curLen*oppLen);
+                                  return Math.acos(Math.max(-1, Math.min(1, Math.abs(dot)))) < 0.05;
+                              })();
+                              // High visibility light green for contrast
+                              const strokeColor = isGreen ? "#0af4d1" : (isDltConfirmed ? "#00e5ff" : "#f59e0b");
+                              const isActive = isGreen;
+
                               return (
                                   <line 
                                       key={`line-${i}`}
                                       x1={prev.x * videoLayout.width} y1={prev.y * videoLayout.height}
                                       x2={p.x * videoLayout.width} y2={p.y * videoLayout.height}
-                                      stroke={isDltConfirmed ? "#00e5ff" : "#f59e0b"}
-                                      strokeWidth={isSelectingDLT && draggingDltEdge === i - 1 ? "4" : "1.5"}
-                                      strokeDasharray="4 4"
-                                      opacity={isSelectingDLT && draggingDltEdge === i - 1 ? "1" : "0.6"}
+                                      stroke={strokeColor}
+                                      strokeWidth={isActive ? "4" : "1.5"}
+                                      strokeDasharray={(isGreen || isDltConfirmed) ? "none" : "4 4"}
+                                      opacity={isActive ? "1" : "0.6"}
                                   />
                               );
                           })}
                           {/* 如果有 4 點，畫最後一條回連線 */}
-                          {dltPoints.length === 4 && (
-                              <line 
-                                  x1={dltPoints[3].x * videoLayout.width} y1={dltPoints[3].y * videoLayout.height}
-                                  x2={dltPoints[0].x * videoLayout.width} y2={dltPoints[0].y * videoLayout.height}
-                                  stroke={isDltConfirmed ? "#00e5ff" : "#f59e0b"}
-                                  strokeWidth={isSelectingDLT && draggingDltEdge === 3 ? "4" : "1.5"}
-                                  strokeDasharray="4 4"
-                                  opacity={isSelectingDLT && draggingDltEdge === 3 ? "1" : "0.6"}
-                              />
-                          )}
+                          {dltPoints.length === 4 && (() => {
+                              const edgeIdx = 3;
+                              const prev = dltPoints[3];
+                              const p = dltPoints[0];
+                              const isGreen = (() => {
+                                  let oppIdx = (edgeIdx + 2) % 4;
+                                  let oppLen = Math.hypot(dltPoints[(oppIdx+1)%4].x - dltPoints[oppIdx].x, dltPoints[(oppIdx+1)%4].y - dltPoints[oppIdx].y);
+                                  let curLen = Math.hypot(p.x - prev.x, p.y - prev.y);
+                                  if (oppLen < 1e-5 || curLen < 1e-5) return false;
+                                  let vx = p.x - prev.x; let vy = p.y - prev.y;
+                                  let ox = dltPoints[(oppIdx+1)%4].x - dltPoints[oppIdx].x;
+                                  let oy = dltPoints[(oppIdx+1)%4].y - dltPoints[oppIdx].y;
+                                  let dot = (vx*ox + vy*oy) / (curLen*oppLen);
+                                  return Math.acos(Math.max(-1, Math.min(1, Math.abs(dot)))) < 0.05;
+                              })();
+                              // High visibility light green for contrast
+                              const strokeColor = isGreen ? "#0af4d1" : (isDltConfirmed ? "#00e5ff" : "#f59e0b");
+                              const isActive = isGreen;
+
+                              return (
+                                  <line 
+                                      x1={dltPoints[3].x * videoLayout.width} y1={dltPoints[3].y * videoLayout.height}
+                                      x2={dltPoints[0].x * videoLayout.width} y2={dltPoints[0].y * videoLayout.height}
+                                      stroke={strokeColor}
+                                      strokeWidth={isActive ? "4" : "1.5"}
+                                      strokeDasharray={(isGreen || isDltConfirmed) ? "none" : "4 4"}
+                                      opacity={isActive ? "1" : "0.6"}
+                                  />
+                              );
+                          })()}
 
                           {dltPoints.length === 4 && (
                               <polygon 
                                   points={dltPoints.map(p => `${p.x * videoLayout.width},${p.y * videoLayout.height}`).join(' ')} 
                                   fill={isDltConfirmed ? "rgba(0, 229, 255, 0.15)" : "rgba(245, 158, 11, 0.15)"}
-                                  stroke={isDltConfirmed ? "#00e5ff" : "#f59e0b"}
-                                  strokeWidth="2"
-                                  strokeDasharray={isDltConfirmed ? "none" : "4 4"}
+                                  stroke="none"
                               />
                           )}
 
@@ -2489,14 +2603,29 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                               const next = dltPoints[(i + 1) % 4];
                               const mx = (p.x + next.x) / 2 * videoLayout.width;
                               const my = (p.y + next.y) / 2 * videoLayout.height;
+                              
                               return (
-                                  <g key={`mid-${i}`}>
+                                  <g key={`mid-${i}`}
+                                     style={{ cursor: "move", pointerEvents: "all" }}
+                                     onDoubleClick={(e) => {
+                                         e.stopPropagation();
+                                         handleDltEdgeDoubleClick(i);
+                                     }}
+                                  >
+                                      {/* Larger invisible hit area to make mobile/desktop easier */}
+                                      <rect
+                                          x={mx - 15} y={my - 15}
+                                          width="30" height="30"
+                                          fill="transparent"
+                                      />
+                                      {/* Visible handle element */}
                                       <rect
                                           x={mx - 6} y={my - 6}
                                           width="12" height="12"
                                           fill={isDltConfirmed ? "#00e5ff" : "#fcd34d"}
                                           opacity="0.8"
                                           rx="2"
+                                          className="hover:scale-110 transition-transform duration-100"
                                       />
                                   </g>
                               );
