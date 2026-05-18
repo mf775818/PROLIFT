@@ -59,6 +59,10 @@ export class ProjectiveMathHPC {
 
 import { TrackingBuffer } from './TrackingBuffer';
 
+// Pre-allocate memory to avoid garbage collection in hot-loops
+const trueLeftCenter = new Float64Array(3);
+const trueRightCenter = new Float64Array(3);
+
 // 虛擬範例：在每一幀處理時修正 TrackingBuffer
 export function refineTrackingWithProjectiveGeometry(
     buffer: TrackingBuffer, 
@@ -67,9 +71,6 @@ export function refineTrackingWithProjectiveGeometry(
     vanishingLine: Float64Array,
     frameIndex: number
 ): void {
-    const trueLeftCenter = new Float64Array(3);
-    const trueRightCenter = new Float64Array(3);
-
     // 利用極點極線求出該幀槓鈴真正的 3D 投影中心
     const successL = ProjectiveMathHPC.computeTruePhysicalCenter(trueLeftCenter, leftPlateConic, vanishingLine);
     const successR = ProjectiveMathHPC.computeTruePhysicalCenter(trueRightCenter, rightPlateConic, vanishingLine);
