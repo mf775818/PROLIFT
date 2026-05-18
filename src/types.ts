@@ -9,6 +9,24 @@ export interface LiftMetrics {
   hipAngle: number;
   ankleAngle?: number;
   backAngle?: number;
+  lKneeAngle?: number;
+  rKneeAngle?: number;
+  lAnkleAngle?: number;
+  rAnkleAngle?: number;
+  lHipAngle?: number;
+  rHipAngle?: number;
+  lKneeX?: number;
+  lKneeY?: number;
+  rKneeX?: number;
+  rKneeY?: number;
+  lHipX?: number;
+  lHipY?: number;
+  rHipX?: number;
+  rHipY?: number;
+  lAnkleX?: number;
+  lAnkleY?: number;
+  rAnkleX?: number;
+  rAnkleY?: number;
 }
 
 export interface Keypoint {

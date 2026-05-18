@@ -222,8 +222,35 @@ const upsampleData = (data: LiftMetrics[], factor: number = 4) => {
             const ba1 = p1.backAngle || 0;
             const ba2 = p2.backAngle || 0;
             const backAngle = ba1 + (ba2 - ba1) * t;
+
+            const lKneeAngle = (p1.lKneeAngle || 0) + ((p2.lKneeAngle || 0) - (p1.lKneeAngle || 0)) * t;
+            const rKneeAngle = (p1.rKneeAngle || 0) + ((p2.rKneeAngle || 0) - (p1.rKneeAngle || 0)) * t;
+            const lAnkleAngle = (p1.lAnkleAngle || 0) + ((p2.lAnkleAngle || 0) - (p1.lAnkleAngle || 0)) * t;
+            const rAnkleAngle = (p1.rAnkleAngle || 0) + ((p2.rAnkleAngle || 0) - (p1.rAnkleAngle || 0)) * t;
+            const lHipAngle = (p1.lHipAngle || 0) + ((p2.lHipAngle || 0) - (p1.lHipAngle || 0)) * t;
+            const rHipAngle = (p1.rHipAngle || 0) + ((p2.rHipAngle || 0) - (p1.rHipAngle || 0)) * t;
+
+            const lKneeX = (p1.lKneeX || 0) + ((p2.lKneeX || 0) - (p1.lKneeX || 0)) * t;
+            const lKneeY = (p1.lKneeY || 0) + ((p2.lKneeY || 0) - (p1.lKneeY || 0)) * t;
+            const rKneeX = (p1.rKneeX || 0) + ((p2.rKneeX || 0) - (p1.rKneeX || 0)) * t;
+            const rKneeY = (p1.rKneeY || 0) + ((p2.rKneeY || 0) - (p1.rKneeY || 0)) * t;
+            const lHipX = (p1.lHipX || 0) + ((p2.lHipX || 0) - (p1.lHipX || 0)) * t;
+            const lHipY = (p1.lHipY || 0) + ((p2.lHipY || 0) - (p1.lHipY || 0)) * t;
+            const rHipX = (p1.rHipX || 0) + ((p2.rHipX || 0) - (p1.rHipX || 0)) * t;
+            const rHipY = (p1.rHipY || 0) + ((p2.rHipY || 0) - (p1.rHipY || 0)) * t;
+            const lAnkleX = (p1.lAnkleX || 0) + ((p2.lAnkleX || 0) - (p1.lAnkleX || 0)) * t;
+            const lAnkleY = (p1.lAnkleY || 0) + ((p2.lAnkleY || 0) - (p1.lAnkleY || 0)) * t;
+            const rAnkleX = (p1.rAnkleX || 0) + ((p2.rAnkleX || 0) - (p1.rAnkleX || 0)) * t;
+            const rAnkleY = (p1.rAnkleY || 0) + ((p2.rAnkleY || 0) - (p1.rAnkleY || 0)) * t;
             
-            result.push({ time, velocity, height, power, x, y, kneeAngle, hipAngle, ankleAngle, backAngle });
+            result.push({ 
+                time, velocity, height, power, x, y, 
+                kneeAngle, hipAngle, ankleAngle, backAngle,
+                lKneeAngle, rKneeAngle, lAnkleAngle, rAnkleAngle, lHipAngle, rHipAngle,
+                lKneeX, lKneeY, rKneeX, rKneeY,
+                lHipX, lHipY, rHipX, rHipY,
+                lAnkleX, lAnkleY, rAnkleX, rAnkleY
+            });
         }
     }
     return result;
@@ -1898,6 +1925,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         // Calculate raw angles for smoothing
         const kneeAngleRaw = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
         const hipAngleRaw = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
+
+        const lKneeAngleRaw = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
+        const rKneeAngleRaw = calculateAngle(frame.landmarks[24], frame.landmarks[26], frame.landmarks[28]);
+        const lHipAngleRaw = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
+        const rHipAngleRaw = calculateAngle(frame.landmarks[12], frame.landmarks[24], frame.landmarks[26]);
         
         // --- 🐒C++++ 手術刀調整：DLT 背角同步校正 ---
         // 當 DLT 啟用時，應以此平面校正後的 X 軸作為水平基準進行同步計算
@@ -1913,6 +1945,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
         const backAngleRaw = spineEngine.calculateBackAngle(frame.landmarks, dltEngineAdapter);
         const ankleAngleRaw = ankleEngine.calculateAnkleAngle(frame.landmarks, dltEngineAdapter);
+        const lAnkleAngleRaw = ankleEngine.calculateSpecificAnkleAngle(frame.landmarks, true, dltEngineAdapter);
+        const rAnkleAngleRaw = ankleEngine.calculateSpecificAnkleAngle(frame.landmarks, false, dltEngineAdapter);
 
         // 將 normalized (0~1) 轉為像素坐標
         // 因為後續物理引擎需要 Y 向上，我們在此處先將 Y 翻轉: (1 - y) * canvasH
@@ -1978,6 +2012,21 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
         if (Math.abs(velocity) > maxVel) maxVel = Math.abs(velocity);
         
+        const lm = frame.landmarks;
+        const hasLM = lm && lm.length >= 29;
+
+        // Recompute angles for Left/Right specifically. Raw output is fine for this detailed view.
+        let lKneeA = 0, rKneeA = 0, lHipA = 0, rHipA = 0, lAnkleA = 0, rAnkleA = 0;
+        if (hasLM) {
+            lKneeA = calculateAngle(lm[23], lm[25], lm[27]);
+            rKneeA = calculateAngle(lm[24], lm[26], lm[28]);
+            lHipA = calculateAngle(lm[11], lm[23], lm[25]);
+            rHipA = calculateAngle(lm[12], lm[24], lm[26]);
+            // Just reuse ankleEngine without DLT for raw
+            lAnkleA = ankleEngine.calculateSpecificAnkleAngle(lm, true, null);
+            rAnkleA = ankleEngine.calculateSpecificAnkleAngle(lm, false, null);
+        }
+
         metrics.push({ 
             time: frame.time.toFixed(3), 
             velocity: Math.max(0, velocity), 
@@ -1990,7 +2039,25 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             kneeAngle: outKnee[i], 
             hipAngle: outHip[i],
             ankleAngle: outAnkle[i],
-            backAngle: outBack[i]
+            backAngle: outBack[i],
+            lKneeAngle: lKneeA,
+            rKneeAngle: rKneeA,
+            lAnkleAngle: lAnkleA,
+            rAnkleAngle: rAnkleA,
+            lHipAngle: lHipA,
+            rHipAngle: rHipA,
+            lHipX: hasLM ? lm[23]?.x : 0,
+            lHipY: hasLM ? lm[23]?.y : 0,
+            rHipX: hasLM ? lm[24]?.x : 0,
+            rHipY: hasLM ? lm[24]?.y : 0,
+            lKneeX: hasLM ? lm[25]?.x : 0,
+            lKneeY: hasLM ? lm[25]?.y : 0,
+            rKneeX: hasLM ? lm[26]?.x : 0,
+            rKneeY: hasLM ? lm[26]?.y : 0,
+            lAnkleX: hasLM ? lm[27]?.x : 0,
+            lAnkleY: hasLM ? lm[27]?.y : 0,
+            rAnkleX: hasLM ? lm[28]?.x : 0,
+            rAnkleY: hasLM ? lm[28]?.y : 0
         });
     }
 

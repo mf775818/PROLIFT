@@ -41,6 +41,7 @@ type ChartMode = 'kinematics' | 'kinetics' | 'trajectory' | 'power' | 'angles';
 
 export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbellMass, onCursorMove, onSeekToTime }) => {
   const [mode, setMode] = useState<ChartMode>('kinematics');
+  const [fullAngleMode, setFullAngleMode] = useState(false);
   
   // Intelligent mobile detection combining pointer type and user agent, averting issues from resized desktop windows.
   const isMobile = useMemo(() => {
@@ -195,8 +196,26 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
         'Hip Angle (deg)',
         'Ankle Angle (deg)',
         'Back Angle (deg)',
+        'L Knee Angle (deg)',
+        'R Knee Angle (deg)',
+        'L Ankle Angle (deg)',
+        'R Ankle Angle (deg)',
+        'L Hip Angle (deg)',
+        'R Hip Angle (deg)',
         'Raw X (Norm)',
-        'Raw Y (Norm)'
+        'Raw Y (Norm)',
+        'L Hip X',
+        'L Hip Y',
+        'R Hip X',
+        'R Hip Y',
+        'L Knee X',
+        'L Knee Y',
+        'R Knee X',
+        'R Knee Y',
+        'L Ankle X',
+        'L Ankle Y',
+        'R Ankle X',
+        'R Ankle Y'
     ];
 
     // 4. Build Data Rows
@@ -212,8 +231,26 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
         row.hipAngle.toFixed(1),
         (row.ankleAngle || 0).toFixed(1),
         (row.backAngle || 0).toFixed(1),
+        (row.lKneeAngle || 0).toFixed(1),
+        (row.rKneeAngle || 0).toFixed(1),
+        (row.lAnkleAngle || 0).toFixed(1),
+        (row.rAnkleAngle || 0).toFixed(1),
+        (row.lHipAngle || 0).toFixed(1),
+        (row.rHipAngle || 0).toFixed(1),
         row.x.toFixed(6),
-        row.y.toFixed(6)
+        row.y.toFixed(6),
+        (row.lHipX || 0).toFixed(6),
+        (row.lHipY || 0).toFixed(6),
+        (row.rHipX || 0).toFixed(6),
+        (row.rHipY || 0).toFixed(6),
+        (row.lKneeX || 0).toFixed(6),
+        (row.lKneeY || 0).toFixed(6),
+        (row.rKneeX || 0).toFixed(6),
+        (row.rKneeY || 0).toFixed(6),
+        (row.lAnkleX || 0).toFixed(6),
+        (row.lAnkleY || 0).toFixed(6),
+        (row.rAnkleX || 0).toFixed(6),
+        (row.rAnkleY || 0).toFixed(6)
     ]);
 
     // 5. Construct CSV String
@@ -563,6 +600,23 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
            >
                ANGLES
            </button>
+           {mode === 'angles' && (
+             <div className="flex items-center gap-1.5 shrink-0 ml-1 pl-2 border-l border-zinc-700 h-4">
+               <button 
+                 onClick={() => setFullAngleMode(!fullAngleMode)}
+                 className={`relative inline-flex h-3 w-[22px] shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors duration-300 ease-in-out focus:outline-none ${fullAngleMode ? 'bg-zinc-400' : 'bg-zinc-800 border-zinc-600'}`}
+                 aria-pressed={fullAngleMode}
+               >
+                 <span className={`pointer-events-none inline-block h-2 w-2 transform rounded-full bg-white shadow ring-0 transition duration-300 ease-in-out ${fullAngleMode ? 'translate-x-[10px]' : 'translate-x-px'}`} />
+               </button>
+               <span 
+                 className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide cursor-pointer transition-colors hover:text-zinc-300 select-none"
+                 onClick={() => setFullAngleMode(!fullAngleMode)}
+               >
+                 L/R JOINTS
+               </span>
+             </div>
+           )}
            <button 
              onClick={() => { setMode('trajectory'); setZoomDomain(null); }}
              className={`shrink-0 px-2 py-1 text-[9px] font-bold rounded transition-colors ${mode === 'trajectory' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
@@ -662,7 +716,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
           ) : mode === 'kinetics' ? (
             <ComposedChart data={processedData} onMouseMove={handleTooltip} onClick={handleChartClick} margin={{ top: 5, right: 35, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-              <XAxis dataKey="timeVal" type="number" domain={xAxisDomain} allowDataOverflow={true} stroke="#52525b" fontSize={10} />
+              <XAxis dataKey="timeVal" type="number" domain={xAxisDomain} allowDataOverflow={true} stroke="#52525b" fontSize={10} tickFormatter={(val) => val.toFixed(1)} />
               <YAxis yAxisId="left" stroke="#71717a" fontSize={10} width={40} label={{ value: 'N', angle: -90, position: 'insideLeft', fontSize: 9, fill: '#52525b' }} />
               <YAxis yAxisId="right" orientation="right" stroke="#71717a" fontSize={10} width={30} label={{ value: 'm/s²', angle: 90, position: 'insideRight', fontSize: 9, fill: '#52525b' }} />
               <Tooltip 
@@ -684,7 +738,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
           ) : mode === 'power' ? (
              <AreaChart data={processedData} onMouseMove={handleTooltip} onClick={handleChartClick} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-              <XAxis dataKey="timeVal" type="number" domain={xAxisDomain} allowDataOverflow={true} stroke="#52525b" fontSize={10} />
+              <XAxis dataKey="timeVal" type="number" domain={xAxisDomain} allowDataOverflow={true} stroke="#52525b" fontSize={10} tickFormatter={(val) => val.toFixed(1)} />
               <YAxis stroke="#71717a" fontSize={10} width={40} />
               <Tooltip 
                  contentStyle={{ backgroundColor: 'rgba(24, 24, 27, 0.9)', border: '1px solid #3f3f46' }} 
@@ -701,8 +755,15 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
           ) : mode === 'angles' ? (
              <LineChart data={processedData} onMouseMove={handleTooltip} onClick={handleChartClick} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-              <XAxis dataKey="timeVal" type="number" domain={xAxisDomain} allowDataOverflow={true} stroke="#52525b" fontSize={10} />
-              <YAxis stroke="#71717a" fontSize={10} width={40} domain={[0, 180]} />
+              <XAxis dataKey="timeVal" type="number" domain={xAxisDomain} allowDataOverflow={true} stroke="#52525b" fontSize={10} tickFormatter={(val) => val.toFixed(1)} />
+              <YAxis 
+                stroke="#71717a" 
+                fontSize={10} 
+                width={30} 
+                domain={fullAngleMode ? [0, 180] : ['auto', 'auto']} 
+                ticks={fullAngleMode ? [0, 45, 90, 135, 180] : undefined} 
+                tickFormatter={(val) => val.toFixed(0)} 
+              />
               <Legend verticalAlign="top" height={36} iconSize={8} wrapperStyle={{ fontSize: '10px' }} />
               <Tooltip 
                  contentStyle={{ backgroundColor: 'rgba(24, 24, 27, 0.9)', border: '1px solid #3f3f46' }} 
@@ -714,14 +775,36 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
               {currentPoint && (
                 <>
                   <ReferenceDot x={currentPoint.timeVal} y={currentPoint.hipAngle} r={3} fill="#3b82f6" stroke="none" />
-                  <ReferenceDot x={currentPoint.timeVal} y={currentPoint.kneeAngle} r={3} fill="#facc15" stroke="none" />
-                  <ReferenceDot x={currentPoint.timeVal} y={currentPoint.ankleAngle} r={3} fill="#10b981" stroke="none" />
+                  {fullAngleMode ? (
+                    <>
+                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.lKneeAngle || 0} r={3} fill="#facc15" stroke="none" />
+                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.rKneeAngle || 0} r={3} fill="#fb923c" stroke="none" />
+                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.lAnkleAngle || 0} r={3} fill="#10b981" stroke="none" />
+                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.rAnkleAngle || 0} r={3} fill="#2dd4bf" stroke="none" />
+                    </>
+                  ) : (
+                    <>
+                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.kneeAngle} r={3} fill="#facc15" stroke="none" />
+                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.ankleAngle} r={3} fill="#10b981" stroke="none" />
+                    </>
+                  )}
                   <ReferenceDot x={currentPoint.timeVal} y={currentPoint.backAngle || 0} r={3} fill="#a78bfa" stroke="none" />
                 </>
               )}
               <Line name="Hip" type="monotone" dataKey="hipAngle" stroke="#3b82f6" strokeWidth={2} dot={false} isAnimationActive={false} />
-              <Line name="Knee" type="monotone" dataKey="kneeAngle" stroke="#facc15" strokeWidth={2} dot={false} isAnimationActive={false} />
-              <Line name="Ankle" type="monotone" dataKey="ankleAngle" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} />
+              {fullAngleMode ? (
+                <>
+                  <Line name="L Knee" type="monotone" dataKey="lKneeAngle" stroke="#facc15" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line name="R Knee" type="monotone" dataKey="rKneeAngle" stroke="#fb923c" strokeWidth={2} dot={false} isAnimationActive={false} strokeDasharray="5 5" />
+                  <Line name="L Ankle" type="monotone" dataKey="lAnkleAngle" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line name="R Ankle" type="monotone" dataKey="rAnkleAngle" stroke="#2dd4bf" strokeWidth={2} dot={false} isAnimationActive={false} strokeDasharray="5 5" />
+                </>
+              ) : (
+                <>
+                  <Line name="Knee" type="monotone" dataKey="kneeAngle" stroke="#facc15" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line name="Ankle" type="monotone" dataKey="ankleAngle" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} />
+                </>
+              )}
               <Line name="Back" type="monotone" dataKey="backAngle" stroke="#a78bfa" strokeWidth={2} dot={false} isAnimationActive={false} />
             </LineChart>
           ) : mode === 'trajectory' ? (

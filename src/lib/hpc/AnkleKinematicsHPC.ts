@@ -61,22 +61,10 @@ export class AnkleKinematicsHPC {
         return 1.0;
     }
 
-    public calculateAnkleAngle(landmarks: any[], dltEngine?: any | null): number {
+    public calculateSpecificAnkleAngle(landmarks: any[], isLeft: boolean, dltEngine?: any | null): number {
         if (!landmarks || landmarks.length <= this.RIGHT_FOOT_INDEX) {
             return 90.0; 
         }
-
-        const leftVis = (landmarks[this.LEFT_KNEE]?.visibility ?? 0) + 
-                        (landmarks[this.LEFT_ANKLE]?.visibility ?? 0) + 
-                        (landmarks[this.LEFT_HEEL]?.visibility ?? 0) + 
-                        (landmarks[this.LEFT_FOOT_INDEX]?.visibility ?? 0);
-
-        const rightVis = (landmarks[this.RIGHT_KNEE]?.visibility ?? 0) + 
-                         (landmarks[this.RIGHT_ANKLE]?.visibility ?? 0) + 
-                         (landmarks[this.RIGHT_HEEL]?.visibility ?? 0) + 
-                         (landmarks[this.RIGHT_FOOT_INDEX]?.visibility ?? 0);
-
-        const isLeft = leftVis >= (rightVis * 0.95);
 
         const kneeIdx  = isLeft ? this.LEFT_KNEE : this.RIGHT_KNEE;
         const ankleIdx = isLeft ? this.LEFT_ANKLE : this.RIGHT_ANKLE;
@@ -164,5 +152,24 @@ export class AnkleKinematicsHPC {
         cosTheta = Math.max(-1.0, Math.min(1.0, cosTheta));
 
         return Math.acos(cosTheta) * this.rad2deg;
+    }
+
+    public calculateAnkleAngle(landmarks: any[], dltEngine?: any | null): number {
+        if (!landmarks || landmarks.length <= this.RIGHT_FOOT_INDEX) {
+            return 90.0; 
+        }
+
+        const leftVis = (landmarks[this.LEFT_KNEE]?.visibility ?? 0) + 
+                        (landmarks[this.LEFT_ANKLE]?.visibility ?? 0) + 
+                        (landmarks[this.LEFT_HEEL]?.visibility ?? 0) + 
+                        (landmarks[this.LEFT_FOOT_INDEX]?.visibility ?? 0);
+
+        const rightVis = (landmarks[this.RIGHT_KNEE]?.visibility ?? 0) + 
+                         (landmarks[this.RIGHT_ANKLE]?.visibility ?? 0) + 
+                         (landmarks[this.RIGHT_HEEL]?.visibility ?? 0) + 
+                         (landmarks[this.RIGHT_FOOT_INDEX]?.visibility ?? 0);
+
+        const isLeft = leftVis >= (rightVis * 0.95);
+        return this.calculateSpecificAnkleAngle(landmarks, isLeft, dltEngine);
     }
 }
