@@ -641,6 +641,9 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const pathCanvasRef = useRef<HTMLCanvasElement>(null);
+  // --- 🐒C++++ 雙緩衝狀態指標 ---
+  const offscreenPathCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const bakedIndexRef = useRef<number>(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const processingVideoRef = useRef<HTMLVideoElement>(document.createElement('video'));
   
@@ -2208,7 +2211,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           overlayCtx.restore();
       }
 
-      // --- PATH RENDERING (LTS) ---
+      // --- PATH RENDERING (LTS): INDUSTRIAL DOUBLE BUFFERING ---
       const currentT = typeof metric.time === 'string' ? parseFloat(metric.time) : metric.time;
       const commands = renderCommandsRef.current;
       let targetIdx = 0;
@@ -2222,38 +2225,62 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       }
 
       const lastIdx = lastRenderedIndexRef.current;
-      const delta = targetIdx - lastIdx;
 
       if (commands.length > 1 && targetIdx !== lastIdx) {
-          pathCtx.lineWidth = 4; pathCtx.lineCap = 'round'; pathCtx.lineJoin = 'round';
-          if (delta > 0 && delta <= 30 && lastIdx >= 0) {
-              pathCtx.beginPath(); pathCtx.moveTo(commands[lastIdx].x * w, commands[lastIdx].y * h);
-              let lastColor = commands[lastIdx].color;
-              for (let i = lastIdx + 1; i <= targetIdx; i++) {
-                  if (commands[i].color !== lastColor) {
-                      pathCtx.strokeStyle = lastColor; pathCtx.stroke();
-                      pathCtx.beginPath(); pathCtx.moveTo(commands[i-1].x * w, commands[i-1].y * h);
-                      lastColor = commands[i].color;
-                  }
-                  pathCtx.lineTo(commands[i].x * w, commands[i].y * h);
-              }
-              pathCtx.strokeStyle = lastColor; pathCtx.stroke();
-          } else if (delta < -2 || delta > 30 || lastIdx === -1) {
-              pathCtx.clearRect(0, 0, w, h);
-              if (targetIdx > 0) {
-                  pathCtx.beginPath(); pathCtx.moveTo(commands[0].x * w, commands[0].y * h);
-                  let lastColor = commands[0].color;
-                  for (let i = 1; i <= targetIdx; i++) {
+          // 1. 初始化與對齊 Back Buffer (背景緩衝) 的尺寸
+          let osCanvas = offscreenPathCanvasRef.current;
+          if (!osCanvas) {
+              osCanvas = document.createElement('canvas');
+              offscreenPathCanvasRef.current = osCanvas;
+          }
+          if (osCanvas.width !== w || osCanvas.height !== h) {
+              osCanvas.width = w; osCanvas.height = h;
+              bakedIndexRef.current = 0; 
+          }
+          const osCtx = osCanvas.getContext('2d', { alpha: true });
+          
+          if (osCtx) {
+              // 內部繪圖輔助函數：負責處理多色彩的線段連接
+              const strokeSegments = (ctx: CanvasRenderingContext2D, start: number, end: number) => {
+                  if (start >= end || start < 0 || end >= commands.length) return;
+                  ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+                  ctx.beginPath(); ctx.moveTo(commands[start].x * w, commands[start].y * h);
+                  let lastColor = commands[start].color;
+                  for (let i = start + 1; i <= end; i++) {
                       if (commands[i].color !== lastColor) {
-                          pathCtx.strokeStyle = lastColor; pathCtx.stroke();
-                          pathCtx.beginPath(); pathCtx.moveTo(commands[i-1].x * w, commands[i-1].y * h);
+                          ctx.strokeStyle = lastColor; ctx.stroke();
+                          ctx.beginPath(); ctx.moveTo(commands[i-1].x * w, commands[i-1].y * h);
                           lastColor = commands[i].color;
                       }
-                      pathCtx.lineTo(commands[i].x * w, commands[i].y * h);
+                      ctx.lineTo(commands[i].x * w, commands[i].y * h);
                   }
-                  pathCtx.strokeStyle = lastColor; pathCtx.stroke();
+                  ctx.strokeStyle = lastColor; ctx.stroke();
+              };
+
+              // 2. Baking 邏輯 (何時該把路徑寫死進記憶體畫布)
+              const bakedIdx = bakedIndexRef.current;
+              
+              if (targetIdx < bakedIdx || targetIdx - bakedIdx > 150 || lastIdx === -1) {
+                  // 倒轉、大幅度快轉或首次渲染：清空 Back Buffer 並重繪歷史
+                  osCtx.clearRect(0, 0, w, h);
+                  const newBakeTarget = Math.max(0, targetIdx - 10);
+                  strokeSegments(osCtx, 0, newBakeTarget);
+                  bakedIndexRef.current = newBakeTarget;
+              } else if (targetIdx - bakedIdx > 30) {
+                  // 穩定前進：將累積夠長的前景轉移(烘焙)至背景，維持 Front Buffer 輕量化
+                  const newBakeTarget = targetIdx - 10;
+                  strokeSegments(osCtx, bakedIdx, newBakeTarget);
+                  bakedIndexRef.current = newBakeTarget;
               }
+
+              // 3. Front Buffer 合成 (極速 GPU 複製 + 繪製 Active Tail)
+              pathCtx.clearRect(0, 0, w, h);
+              // $O(1) 像素複製，徹底免疫歷史點陣數量造成的效能衰退
+              pathCtx.drawImage(osCanvas, 0, 0); 
+              // 僅針對最後幾幀未烘焙的線條做 $O(K) 的路徑渲染
+              strokeSegments(pathCtx, bakedIndexRef.current, targetIdx); 
           }
+
           lastRenderedIndexRef.current = targetIdx;
 
           // --- FLOATING DATA BADGE (Real-time Overlay) ---
