@@ -1202,16 +1202,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
           const newPts = [...dltPoints, coords];
           setDltPoints(newPts);
-          setMagnifierCoords(coords);
-          setShowMagnifier(true);
-          
-          // Auto-hide magnifier after a short delay if just placing a point
-          setTimeout(() => {
-              setDraggingDltIndex(curr => {
-                  if (curr === null) setShowMagnifier(false);
-                  return curr;
-              });
-          }, 800);
+          // 點擊新增 4 點的過程中不顯示放大鏡
           return;
       }
 
@@ -1232,7 +1223,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
               });
               setMagnifierCoords(coords);
               setShowMagnifier(true);
-          } else {
+          } else if (dltPoints.length === 4) {
               // Hover effect for desktop
               if (!('touches' in e)) {
                   let foundIdx = -1;
@@ -1252,6 +1243,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                       setShowMagnifier(false);
                   }
               }
+          } else {
+              setShowMagnifier(false);
           }
           return;
       }
