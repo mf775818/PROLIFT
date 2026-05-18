@@ -1,20 +1,29 @@
+import { PerspectiveMath } from './PerspectiveMath';
+
 /**
  * High-Performance Computing: Biomechanics Projective Cross-Analysis
  * 結合槓鈴剛體與骨架平面的射影幾何分析引擎。
  * 全程使用 Float64Array in-place 運算，確保 V8 引擎 O(1) 效能。
  */
 export class BiomechanicsProjectiveHPC {
-    // 預分配內部暫存區，避免 GC
-    private static tempLineBar: Float64Array = new Float64Array(3);
-    private static tempLineShoulder: Float64Array = new Float64Array(3);
-    private static tempLineHip: Float64Array = new Float64Array(3);
-    private static tempVanishingPoint: Float64Array = new Float64Array(3);
+    // 預分配所有需要的記憶體
+    private readonly t_pB_L = new Float64Array(3);
+    private readonly t_pB_R = new Float64Array(3);
+    private readonly t_pS_L = new Float64Array(3);
+    private readonly t_pS_R = new Float64Array(3);
+    private readonly t_pH_L = new Float64Array(3);
+    private readonly t_pH_R = new Float64Array(3);
+    
+    private readonly tempLineBar = new Float64Array(3);
+    private readonly tempLineShoulder = new Float64Array(3);
+    private readonly tempLineHip = new Float64Array(3);
+    private readonly tempVanishingPoint = new Float64Array(3);
 
     /**
      * 計算 2D 齊次坐標的叉積 (Cross Product)
      * out = a x b (可用於: 兩點求線, 或兩線求交點)
      */
-    public static crossProduct(out: Float64Array, a: Float64Array, b: Float64Array): void {
+    public crossProduct(out: Float64Array, a: Float64Array, b: Float64Array): void {
         out[0] = a[1] * b[2] - a[2] * b[1];
         out[1] = a[2] * b[0] - a[0] * b[2];
         out[2] = a[0] * b[1] - a[1] * b[0];
@@ -30,7 +39,7 @@ export class BiomechanicsProjectiveHPC {
      * @param hipLeft 左髖關節 [x, y, 1]
      * @param hipRight 右髖關節 [x, y, 1]
      */
-    public static analyzeSkeletalTwist(
+    public analyzeSkeletalTwist(
         outMetrics: Float64Array,
         barLeft: Float64Array, barRight: Float64Array,
         shoulderLeft: Float64Array, shoulderRight: Float64Array,
@@ -43,18 +52,20 @@ export class BiomechanicsProjectiveHPC {
         let pH_L = hipLeft, pH_R = hipRight;
 
         if (homographyMatrix) {
-            pB_L = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pB_L, homographyMatrix, barLeft);
-            pB_R = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pB_R, homographyMatrix, barRight);
-            pS_L = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pS_L, homographyMatrix, shoulderLeft);
-            pS_R = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pS_R, homographyMatrix, shoulderRight);
-            pH_L = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pH_L, homographyMatrix, hipLeft);
-            pH_R = new Float64Array(3); PerspectiveMath.multiplyMat3Vec3(pH_R, homographyMatrix, hipRight);
+            PerspectiveMath.multiplyMat3Vec3(this.t_pB_L, homographyMatrix, barLeft); pB_L = this.t_pB_L;
+            PerspectiveMath.multiplyMat3Vec3(this.t_pB_R, homographyMatrix, barRight); pB_R = this.t_pB_R;
+            PerspectiveMath.multiplyMat3Vec3(this.t_pS_L, homographyMatrix, shoulderLeft); pS_L = this.t_pS_L;
+            PerspectiveMath.multiplyMat3Vec3(this.t_pS_R, homographyMatrix, shoulderRight); pS_R = this.t_pS_R;
+            PerspectiveMath.multiplyMat3Vec3(this.t_pH_L, homographyMatrix, hipLeft); pH_L = this.t_pH_L;
+            PerspectiveMath.multiplyMat3Vec3(this.t_pH_R, homographyMatrix, hipRight); pH_R = this.t_pH_R;
 
             // Homogeneous normalization (w division)
             const pts = [pB_L, pB_R, pS_L, pS_R, pH_L, pH_R];
-            for (const p of pts) {
+            for (let i = 0; i < pts.length; i++) {
+                const p = pts[i];
                 if (Math.abs(p[2]) > 1e-10) {
-                    p[0] /= p[2]; p[1] /= p[2]; p[2] = 1.0;
+                    const invW = 1.0 / p[2];
+                    p[0] *= invW; p[1] *= invW; p[2] = 1.0;
                 }
             }
         }
@@ -93,7 +104,7 @@ export class BiomechanicsProjectiveHPC {
      * @param barLeft 槓鈴左真實中心
      * @param barRight 槓鈴右真實中心
      */
-    public static constrainHandToBarbell(
+    public constrainHandToBarbell(
         outHand: Float64Array,
         rawHand: Float64Array,
         barLeft: Float64Array, 
@@ -122,7 +133,7 @@ export class BiomechanicsProjectiveHPC {
     }
 
     // 內部計算兩直線夾角 (簡化版，利用法向量)
-    private static calculateAngularDivergence(lineA: Float64Array, lineB: Float64Array): number {
+    private calculateAngularDivergence(lineA: Float64Array, lineB: Float64Array): number {
         const dot = lineA[0] * lineB[0] + lineA[1] * lineB[1];
         const magA = Math.sqrt(lineA[0] * lineA[0] + lineA[1] * lineA[1]);
         const magB = Math.sqrt(lineB[0] * lineB[0] + lineB[1] * lineB[1]);

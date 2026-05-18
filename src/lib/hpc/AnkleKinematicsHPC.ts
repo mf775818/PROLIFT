@@ -28,20 +28,43 @@ export class AnkleKinematicsHPC {
     /**
      * 內部分守：安全取得朝向 (1 表示朝右, -1 表示朝左)
      */
-    private getFacingDirection(landmarks: any[]): number {
+    private getFacingDirection(landmarks: any[], dltEngine?: any | null): number {
         if (!landmarks || landmarks.length === 0) return 1.0; 
         
+        // 優先邏輯：DLT 標定提示
+        if (dltEngine && dltEngine.facingHint !== undefined) {
+            return dltEngine.facingHint;
+        }
+
+        // 次要邏輯：腳踝 -> 腳尖
+        if (landmarks.length > AnkleKinematicsHPC.RIGHT_FOOT_INDEX) {
+            const leftAnkle = landmarks[AnkleKinematicsHPC.LEFT_ANKLE];
+            const leftToe = landmarks[AnkleKinematicsHPC.LEFT_FOOT_INDEX];
+            const rightAnkle = landmarks[AnkleKinematicsHPC.RIGHT_ANKLE];
+            const rightToe = landmarks[AnkleKinematicsHPC.RIGHT_FOOT_INDEX];
+
+            const leftVis = leftAnkle?.visibility ?? 0;
+            const rightVis = rightAnkle?.visibility ?? 0;
+
+            if (leftVis > 0.5 || rightVis > 0.5) {
+                const ankle = (leftVis > rightVis) ? leftAnkle : rightAnkle;
+                const toe = (leftVis > rightVis) ? leftToe : rightToe;
+                if (ankle && toe && Math.abs(toe.x - ankle.x) > 0.01) {
+                    return (toe.x > ankle.x) ? 1.0 : -1.0;
+                }
+            }
+        }
+
+        // 最終回退：鼻部 -> 耳朵
         const nose = landmarks[AnkleKinematicsHPC.NOSE];
         const leftEar = landmarks[AnkleKinematicsHPC.LEFT_EAR];
         const rightEar = landmarks[AnkleKinematicsHPC.RIGHT_EAR];
-        
-        if (!nose || (!leftEar && !rightEar)) return 1.0;
-
-        // 選擇可見度較高的耳朵進行基準比較
         const ear = ((leftEar?.visibility ?? 0) > (rightEar?.visibility ?? 0)) ? leftEar : rightEar;
-        if (!ear) return 1.0;
+        if (nose && ear && Math.abs(nose.x - ear.x) > 0.01) {
+             return (nose.x > ear.x) ? 1.0 : -1.0;
+        }
 
-        return (nose.x > ear.x) ? 1.0 : -1.0;
+        return 1.0;
     }
 
     /**
@@ -67,7 +90,8 @@ export class AnkleKinematicsHPC {
                          (landmarks[AnkleKinematicsHPC.RIGHT_HEEL]?.visibility ?? 0) + 
                          (landmarks[AnkleKinematicsHPC.RIGHT_FOOT_INDEX]?.visibility ?? 0);
 
-        const isLeft = leftVis > rightVis;
+        // 【工業級強化】增加切換遲滯 (Hysteresis)，減少在正側身時左右腳切換導致的跳動
+        const isLeft = leftVis >= (rightVis * 0.95);
 
         const kneeIdx  = isLeft ? AnkleKinematicsHPC.LEFT_KNEE : AnkleKinematicsHPC.RIGHT_KNEE;
         const ankleIdx = isLeft ? AnkleKinematicsHPC.LEFT_ANKLE : AnkleKinematicsHPC.RIGHT_ANKLE;
@@ -102,9 +126,10 @@ export class AnkleKinematicsHPC {
                     throw new Error("DLT output contains NaN");
                 }
 
-                // 物理空間座標計算
+                // 物理空間座標計算 (物理空間 Y 箭頭朝上，Knee 較高所以 pKnee.y > pAnkle.y 照理說不會發生，DLT 視線也可能翻轉Y)
+                // 為了與 fallback 一致，我們先保留原始向量
                 sx = this.pKnee[0] - this.pAnkle[0];
-                sy = this.pKnee[1] - this.pAnkle[1];
+                sy = -(this.pKnee[1] - this.pAnkle[1]); 
 
                 if (!isFootOccluded) {
                     dltEngine.applyTransform(this.pHeel, rawHeel.x, rawHeel.y);
@@ -115,38 +140,48 @@ export class AnkleKinematicsHPC {
                     }
 
                     fx = this.pToe[0] - this.pHeel[0];
-                    fy = this.pToe[1] - this.pHeel[1];
+                    fy = -(this.pToe[1] - this.pHeel[1]);
                 }
             } catch (e) {
                 // 【優雅降級】若 DLT 爆掉，Fallback 到螢幕空間，確保產線不斷線
                 console.warn("AnkleKinematicsHPC: DLT failed, falling back to Screen space.");
                 sx = rawKnee.x - rawAnkle.x;
-                sy = rawKnee.y - rawAnkle.y;
+                sy = rawAnkle.y - rawKnee.y; // 反轉 Y 軸
 
                 if (!isFootOccluded && rawHeel && rawToe) {
                     fx = rawToe.x - rawHeel.x;
-                    fy = rawToe.y - rawHeel.y;
+                    fy = rawHeel.y - rawToe.y; // 反轉 Y 軸
                 }
             }
         } else {
             // 模式 B：未注入 DLT 四點校正，直接以螢幕 2D 平面計算相對夾角
             sx = rawKnee.x - rawAnkle.x;
-            sy = rawKnee.y - rawAnkle.y;
+            sy = rawAnkle.y - rawKnee.y; // 反轉 Y 軸
 
             if (!isFootOccluded && rawHeel && rawToe) {
                 fx = rawToe.x - rawHeel.x;
-                fy = rawToe.y - rawHeel.y;
+                fy = rawHeel.y - rawToe.y; // 反轉 Y 軸
             }
         }
 
-        // 【防守 4】遮擋降級：使用絕對 X 軸作為水平腳底平面
+        // 【防守 4】遮擋降級：使用絕對 X 軸作為水平腳底平面，邏輯與背角一致 (atan2)
         if (isFootOccluded) {
-            const facing = this.getFacingDirection(landmarks);
-            fx = facing; // 朝右為 +X，朝左為 -X
-            fy = 0;      // 絕對水平平面
+            const facing = this.getFacingDirection(landmarks, dltEngine);
+            const adjustedSx = sx * facing;
+            // sy 是 knee - ankle, 與背部 dy = hip - shoulder 是同向 (下方減上方)
+            // atan2 角度: 0度是水平向前, 90度是垂直向上 (直立)
+            if (Math.abs(adjustedSx) < 1e-7 && Math.abs(sy) < 1e-7) return 90.0;
+            let angle = Math.atan2(sy, adjustedSx) * this.rad2deg;
+            
+            // 移除先前的強制鉗制 (angle < -90 -> 180) 來解決突跳異常
+            // 改為平滑的連續角度空間，允許自然的正負過渡
+            while (angle <= -180.0) angle += 360.0;
+            while (angle > 180.0) angle -= 360.0;
+            
+            return angle;
         }
 
-        // 2. 向量幾何運算
+        // 2. 向量幾何運算 (未遮擋時，計算與真實腳底平面的夾角)
         const dot = fx * sx + fy * sy;                     // 內積
         const magF = Math.sqrt(fx * fx + fy * fy);         // 腳底向量模長
         const magS = Math.sqrt(sx * sx + sy * sy);         // 小腿向量模長

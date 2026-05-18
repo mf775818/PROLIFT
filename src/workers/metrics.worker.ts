@@ -11,6 +11,7 @@ const _self = self as unknown as Worker;
 let metricsBuffer: LiftMetricsBuffer | null = null;
 const calibrationEngine = new CalibrationEngine();
 let trackingBuffer: TrackingBuffer | null = null;
+const physicsEngine = new PhysicsEngineHPC();
 let rkfY: RobustKalmanFilter | null = null;
 let oneEuroKnee: OneEuroFilter | null = null;
 let oneEuroHip: OneEuroFilter | null = null;
@@ -113,8 +114,8 @@ _self.onmessage = (event: MessageEvent) => {
             const outAnkle = new Float32Array(trackingBuffer.head);
             const outBack = new Float32Array(trackingBuffer.head);
 
-            PhysicsEngineHPC.computeKinetics(trackingBuffer, outKinetics, barbellMass);
-            PhysicsEngineHPC.smoothAngles(trackingBuffer, outKnee, outHip, outAnkle, outBack);
+            physicsEngine.computeKinetics(trackingBuffer, outKinetics, barbellMass);
+            physicsEngine.smoothAngles(trackingBuffer, outKnee, outHip, outAnkle, outBack);
 
             // 這裡可以選擇將數據回寫 SAB，或者透過 postMessage 傳給主執行緒
             _self.postMessage({ type: 'OFFLINE_ANALYSIS_COMPLETE', head: trackingBuffer.head });

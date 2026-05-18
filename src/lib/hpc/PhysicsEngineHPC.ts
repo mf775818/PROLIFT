@@ -2,17 +2,34 @@ import { TrackingBuffer } from './TrackingBuffer';
 
 export class PhysicsEngineHPC {
   private static readonly GRAVITY = 9.80665;
+  private bufferPool: Map<string, Float32Array> = new Map();
+
+  private getBuffer(key: string, requiredLength: number): Float32Array {
+      let buf = this.bufferPool.get(key);
+      if (!buf || buf.length < requiredLength) {
+          const newSize = Math.max(requiredLength, (buf?.length || 1024) * 1.5);
+          buf = new Float32Array(newSize);
+          this.bufferPool.set(key, buf);
+      }
+      return buf;
+  }
 
   /**
    * 業界標準：Zero-Lag Butterworth Low-Pass Filter (filtfilt)
    * 用於去除非連續高頻雜訊，維持零相位延遲。
    */
-  private static filtfilt(data: Float32Array, dt: number, cutoff: number): Float32Array {
-    if (data.length < 5) return data.slice();
+  private filtfilt(data: Float32Array, len: number, dt: number, cutoff: number, outBuffer: Float32Array): void {
+    if (len < 5) {
+        for(let i=0; i<len; i++) outBuffer[i] = data[i];
+        return;
+    }
     const fs = 1.0 / dt;
     
     // 如果取樣頻率過低或是 cutoff 超過 Nyquist 頻率，安全回退
-    if (cutoff >= fs / 2) return data.slice();
+    if (cutoff >= fs / 2) {
+        for(let i=0; i<len; i++) outBuffer[i] = data[i];
+        return;
+    }
 
     const wc = Math.tan(Math.PI * cutoff / fs);
     const wc2 = wc * wc;
@@ -24,9 +41,8 @@ export class PhysicsEngineHPC {
     const b1 = 2 * b0;
     const b2 = b0;
 
-    const len = data.length;
-    const forward = new Float32Array(len);
-    const backward = new Float32Array(len);
+    const forward = this.getBuffer('filt_fwd', len);
+    const backward = this.getBuffer('filt_bck', len);
 
     // 前向濾波 (Forward Pass)
     let x1 = data[0], x2 = data[0], y1 = data[0], y2 = data[0];
@@ -47,13 +63,14 @@ export class PhysicsEngineHPC {
         x2 = x1; x1 = x0;
         y2 = y1; y1 = y0;
     }
-    return backward;
+    
+    for(let i=0; i<len; i++) outBuffer[i] = backward[i];
   }
 
   /**
    * 🐒C++++ 修正版：生物力學標準動力引擎 (Butterworth filtfilt 雙向濾波)
    */
-  public static computeKinetics(
+  public computeKinetics(
     inputBuffer: TrackingBuffer, 
     outKinetics: Float32Array, 
     barbellMass: number
@@ -68,14 +85,15 @@ export class PhysicsEngineHPC {
     let avgDt = Math.max(totalTime / (len - 1), 0.016); // 最低保護確保合理 fs
 
     // 2. 獲取原始高度軌跡的陣列切片
-    const rawY = new Float32Array(len);
+    const rawY = this.getBuffer('rawY', len);
     for (let i = 0; i < len; i++) rawY[i] = y[i];
 
     // --- 運動科學標準：位移訊號低通濾波 (對抗 MediaPipe 座標抖動) ---
-    const smoothY = this.filtfilt(rawY, avgDt, 7.0);
+    const smoothY = this.getBuffer('smoothY', len);
+    this.filtfilt(rawY, len, avgDt, 7.0, smoothY);
 
     // 3. 一階微分：計算速度
-    const rawVel = new Float32Array(len);
+    const rawVel = this.getBuffer('rawVel', len);
     for (let i = 1; i < len - 1; i++) {
       const dtClamped = Math.max(t[i + 1] - t[i - 1], 1e-5);
       rawVel[i] = (smoothY[i + 1] - smoothY[i - 1]) / dtClamped;
@@ -84,10 +102,11 @@ export class PhysicsEngineHPC {
     rawVel[len - 1] = rawVel[len - 2];
 
     // 微分會放大雜訊
-    const smoothVel = this.filtfilt(rawVel, avgDt, 5.0);
+    const smoothVel = this.getBuffer('smoothVel', len);
+    this.filtfilt(rawVel, len, avgDt, 5.0, smoothVel);
 
     // 4. 二階微分：計算加速度
-    const rawAccel = new Float32Array(len);
+    const rawAccel = this.getBuffer('rawAccel', len);
     for (let i = 1; i < len - 1; i++) {
       const dtClamped = Math.max(t[i + 1] - t[i - 1], 1e-5);
       rawAccel[i] = (smoothVel[i + 1] - smoothVel[i - 1]) / dtClamped;
@@ -96,7 +115,8 @@ export class PhysicsEngineHPC {
     rawAccel[len - 1] = rawAccel[len - 2];
 
     // 針對加速度最後一次強力平滑 (對抗二次微分極端雜訊)， cutoff = 4.0Hz 保留核心力量峰值
-    const smoothAccel = this.filtfilt(rawAccel, avgDt, 4.0);
+    const smoothAccel = this.getBuffer('smoothAccel', len);
+    this.filtfilt(rawAccel, len, avgDt, 4.0, smoothAccel);
 
     // 5. 第四階段：計算物理量 (Force & Power)
     for (let i = 0; i < len; i++) {
@@ -104,7 +124,7 @@ export class PhysicsEngineHPC {
       const accel = smoothAccel[i];
 
       // 使用平滑後的加速度計算真實受力
-      const force = barbellMass * (this.GRAVITY + accel);
+      const force = barbellMass * (PhysicsEngineHPC.GRAVITY + accel);
       
       const rawPower = force * vel;
       // 去分支取正功: (x + |x|)/2 = max(0, x)
@@ -122,7 +142,7 @@ export class PhysicsEngineHPC {
   /**
    * 📐 關節角度平滑引擎 (Zero-Lag Butterworth)
    */
-  public static smoothAngles(
+  public smoothAngles(
     inputBuffer: TrackingBuffer,
     outKnee: Float32Array,
     outHip: Float32Array,
@@ -140,16 +160,14 @@ export class PhysicsEngineHPC {
 
     const arrays = [kneeAngle, hipAngle, ankleAngle, backAngle];
     const outputs = [outKnee, outHip, outAnkle, outBack];
+    const keys = ['knee', 'hip', 'ankle', 'back'];
 
     for (let axis = 0; axis < 4; axis++) {
       const rawBuf = arrays[axis];
-      const rawData = new Float32Array(len);
+      const rawData = this.getBuffer(`raw_${keys[axis]}`, len);
       for(let i = 0; i < len; i++) rawData[i] = rawBuf[i];
 
-      const smoothed = this.filtfilt(rawData, avgDt, cutoffFreq);
-      for (let i = 0; i < len; i++) {
-          outputs[axis][i] = smoothed[i];
-      }
+      this.filtfilt(rawData, len, avgDt, cutoffFreq, outputs[axis]);
     }
   }
 }

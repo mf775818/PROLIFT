@@ -1,4 +1,5 @@
 import { PerspectiveMath } from './PerspectiveMath';
+import { TrackingBuffer } from './TrackingBuffer';
 
 /**
  * 高效能射影幾何引擎 (Projective Geometry HPC)
@@ -6,7 +7,9 @@ import { PerspectiveMath } from './PerspectiveMath';
  */
 export class ProjectiveMathHPC {
     // 預先分配記憶體，避免在 hot-loop 中觸發 GC
-    private static tempMatrix: Float64Array = new Float64Array(9);
+    private tempMatrix: Float64Array = new Float64Array(9);
+    private trueLeftCenter = new Float64Array(3);
+    private trueRightCenter = new Float64Array(3);
     
     /**
      * 從 2D 橢圓 (槓鈴片) 計算真實的 3D 物理投影中心
@@ -17,7 +20,7 @@ export class ProjectiveMathHPC {
      * @param vanishingLine Float64Array[3] - 畫面的消失線 (由槓鈴軸線與場地平行線計算而得)
      * @returns boolean - 矩陣是否可逆 (若橢圓退化成線則返回 false)
      */
-    public static computeTruePhysicalCenter(
+    public computeTruePhysicalCenter(
         outCenter: Float64Array, 
         conicMatrixQ: Float64Array, 
         vanishingLine: Float64Array
@@ -48,40 +51,34 @@ export class ProjectiveMathHPC {
      * 可用於已知真實中心，反推 2D 畫面中垂直於該中心的透視輔助線
      * 公式：l = Q * p
      */
-    public static computePolarLine(
+    public computePolarLine(
         outLine: Float64Array,
         conicMatrixQ: Float64Array,
         pole: Float64Array
     ): void {
         PerspectiveMath.multiplyMat3Vec3(outLine, conicMatrixQ, pole);
     }
-}
 
-import { TrackingBuffer } from './TrackingBuffer';
+    // 虛擬範例：在每一幀處理時修正 TrackingBuffer
+    public refineTrackingWithProjectiveGeometry(
+        buffer: TrackingBuffer, 
+        leftPlateConic: Float64Array, 
+        rightPlateConic: Float64Array, 
+        vanishingLine: Float64Array,
+        frameIndex: number
+    ): void {
+        // 利用極點極線求出該幀槓鈴真正的 3D 投影中心
+        const successL = this.computeTruePhysicalCenter(this.trueLeftCenter, leftPlateConic, vanishingLine);
+        const successR = this.computeTruePhysicalCenter(this.trueRightCenter, rightPlateConic, vanishingLine);
 
-// Pre-allocate memory to avoid garbage collection in hot-loops
-const trueLeftCenter = new Float64Array(3);
-const trueRightCenter = new Float64Array(3);
-
-// 虛擬範例：在每一幀處理時修正 TrackingBuffer
-export function refineTrackingWithProjectiveGeometry(
-    buffer: TrackingBuffer, 
-    leftPlateConic: Float64Array, 
-    rightPlateConic: Float64Array, 
-    vanishingLine: Float64Array,
-    frameIndex: number
-): void {
-    // 利用極點極線求出該幀槓鈴真正的 3D 投影中心
-    const successL = ProjectiveMathHPC.computeTruePhysicalCenter(trueLeftCenter, leftPlateConic, vanishingLine);
-    const successR = ProjectiveMathHPC.computeTruePhysicalCenter(trueRightCenter, rightPlateConic, vanishingLine);
-
-    if (successL && successR) {
-        // 將修正後的真實中心覆寫回 TrackingBuffer
-        // 這會讓 PhysicsEngineHPC 算出的速度 (vel) 與作功 (power) 更接近真實物理量
-        buffer.x[frameIndex] = (trueLeftCenter[0] + trueRightCenter[0]) * 0.5;
-        buffer.y[frameIndex] = (trueLeftCenter[1] + trueRightCenter[1]) * 0.5;
-        
-        // 進階：利用 trueLeftCenter 與 trueRightCenter 的透視長度，
-        // 與已知的真實槓鈴長度 (如 220cm) 進行 Cross-Ratio (交比) 計算，求出精準的 Z 軸深度。
+        if (successL && successR) {
+            // 將修正後的真實中心覆寫回 TrackingBuffer
+            // 這會讓 PhysicsEngineHPC 算出的速度 (vel) 與作功 (power) 更接近真實物理量
+            buffer.x[frameIndex] = (this.trueLeftCenter[0] + this.trueRightCenter[0]) * 0.5;
+            buffer.y[frameIndex] = (this.trueLeftCenter[1] + this.trueRightCenter[1]) * 0.5;
+            
+            // 進階：利用 trueLeftCenter 與 trueRightCenter 的透視長度，
+            // 與已知的真實槓鈴長度 (如 220cm) 進行 Cross-Ratio (交比) 計算，求出精準的 Z 軸深度。
+        }
     }
 }

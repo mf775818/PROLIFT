@@ -1681,7 +1681,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         const minX = Math.min(srcPts[0], srcPts[2], srcPts[4], srcPts[6]);
         const minY = Math.min(srcPts[1], srcPts[3], srcPts[5], srcPts[7]);
 
-        let dstPts = [
+        const isFacingRight = srcPts[0] > srcPts[2];
+        let dstPts = isFacingRight ? [
+            minX + w, minY,
+            minX, minY,
+            minX, minY + h,
+            minX + w, minY + h
+        ] : [
             minX, minY,
             minX + w, minY,
             minX + w, minY + h,
@@ -1723,7 +1729,12 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                 w = w * arRatio;
                 
                 // 重新計算真正等距、等向的 Homography 矩陣
-                dstPts = [
+                dstPts = isFacingRight ? [
+                    minX + w, minY,
+                    minX, minY,
+                    minX, minY + h,
+                    minX + w, minY + h
+                ] : [
                     minX, minY,
                     minX + w, minY,
                     minX + w, minY + h,
@@ -1805,13 +1816,14 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         
         // --- 🐒C++++ 手術刀調整：DLT 背角同步校正 ---
         // 當 DLT 啟用時，應以此平面校正後的 X 軸作為水平基準進行同步計算
+        const calibFacingHint = (isDltConfirmed && dltPoints.length >= 2) ? (dltPoints[0].x > dltPoints[1].x ? 1.0 : -1.0) : 1.0;
+        
         const dltEngineAdapter = (isDltConfirmed && dltPoints.length === 4) ? {
             applyTransform: (out: Float64Array | Float32Array, x: number, y: number) => {
                 // VideoAnalyzer 內的 dlt 計算期望傳入 pixel values (即 x*canvasW, y*canvasH) 以符合 hMatrix
                 calibration.applyTransform(out, x * canvasW, y * canvasH);
-                // 再從像素轉回正規化座標或保留 pixel 都可以，不過 SpineKinematicsHPC 在乎的是 dy/dx 比例
-                // 這裡我們直接傳回 hMatrix 轉換後的 x, y
-            }
+            },
+            facingHint: calibFacingHint
         } : null;
 
         const backAngleRaw = SpineKinematicsHPC.calculateBackAngle(frame.landmarks, dltEngineAdapter);
@@ -1853,12 +1865,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const outHip = new Float32Array(n);
     const outAnkle = new Float32Array(n);
     const outBack = new Float32Array(n);
+    const physicsEngine = new PhysicsEngineHPC(); // Create temporary for full pass
     
     // 批次物理動力計算 (O(n) Zero-Allocation)
-    PhysicsEngineHPC.computeKinetics(trackingBuffer, outKinetics, barbellMassRef.current);
+    physicsEngine.computeKinetics(trackingBuffer, outKinetics, barbellMassRef.current);
     
     // --- NEW: Industrial Grade Angle Smoothing (OneEuro + Sigmoid) ---
-    PhysicsEngineHPC.smoothAngles(trackingBuffer, outKnee, outHip, outAnkle, outBack);
+    physicsEngine.smoothAngles(trackingBuffer, outKnee, outHip, outAnkle, outBack);
 
     const metrics: LiftMetrics[] = []; let maxVel = 0;
 
@@ -2676,7 +2689,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                                       const minX = Math.min(srcPts[0], srcPts[2], srcPts[4], srcPts[6]);
                                       const minY = Math.min(srcPts[1], srcPts[3], srcPts[5], srcPts[7]);
 
-                                      const dstPts = [
+                                      const isFacingRight = srcPts[0] > srcPts[2];
+                                      const dstPts = isFacingRight ? [
+                                          minX + w, minY,
+                                          minX, minY,
+                                          minX, minY + h,
+                                          minX + w, minY + h
+                                      ] : [
                                           minX, minY,
                                           minX + w, minY,
                                           minX + w, minY + h,

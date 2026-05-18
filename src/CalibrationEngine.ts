@@ -13,12 +13,15 @@ export class CalibrationEngine {
   private static readonly SAGITTAL_THRESHOLD = 1.5;
 
   private hpcEngine: HPCCalibration;
+  private projectiveMath: ProjectiveMathHPC;
 
   constructor(hpcEngine?: HPCCalibration) {
       this.hpcEngine = hpcEngine || new HPCCalibration();
+      this.projectiveMath = new ProjectiveMathHPC();
   }
 
   // 靜態內存池 (Object Pooling): 避免每一幀生成新物件導致 GC 停頓 (Jank)
+  private readonly _tempCenter = new Float64Array(3);
   private readonly _cachedResult: CalibrationResult = {
     perspective: Perspective.FRONTAL,
     scaleFactor: null,
@@ -96,8 +99,8 @@ export class CalibrationEngine {
       }
 
       if (conicMatrixQ && vanishingLine) {
-        // 真實 3D 投影校正：依賴 ProjectiveMathHPC.computeTruePhysicalCenter
-        const success = ProjectiveMathHPC.computeTruePhysicalCenter(this._tempCenter, conicMatrixQ, vanishingLine);
+        // 真實 3D 投影校正：依賴 projectiveMath.computeTruePhysicalCenter
+        const success = this.projectiveMath.computeTruePhysicalCenter(this._tempCenter, conicMatrixQ, vanishingLine);
         if (success) {
             // 已獲取真實投影中心。
             // 使用 HPC 引擎內的 H 矩陣作為參考座標轉換

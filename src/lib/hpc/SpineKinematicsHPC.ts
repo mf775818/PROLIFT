@@ -11,6 +11,10 @@ export class SpineKinematicsHPC {
     private static readonly RIGHT_SHOULDER = 12;
     private static readonly LEFT_HIP = 23;
     private static readonly RIGHT_HIP = 24;
+    private static readonly LEFT_ANKLE = 27;
+    private static readonly RIGHT_ANKLE = 28;
+    private static readonly LEFT_FOOT_INDEX = 31;
+    private static readonly RIGHT_FOOT_INDEX = 32;
 
     // 預先分配的實例級別緩存，100% 避免 GC 壓力
     private static readonly pShoulder = new Float64Array(2);
@@ -21,19 +25,41 @@ export class SpineKinematicsHPC {
      * 內部分守：安全取得朝向 (1 表示朝右, -1 表示朝左)
      */
     private static getFacingDirection(landmarks: any[]): number {
-        if (!landmarks || landmarks.length === 0) return 1.0; // 預設朝右
+        if (!landmarks || landmarks.length === 0) return 1.0; 
         
+        // 優先邏輯：腳踝 -> 腳尖 (最穩定的側向定位指標)
+        if (landmarks.length > this.RIGHT_FOOT_INDEX) {
+            const leftAnkle = landmarks[this.LEFT_ANKLE];
+            const leftToe = landmarks[this.LEFT_FOOT_INDEX];
+            const rightAnkle = landmarks[this.RIGHT_ANKLE];
+            const rightToe = landmarks[this.RIGHT_FOOT_INDEX];
+
+            const leftVis = leftAnkle?.visibility ?? 0;
+            const rightVis = rightAnkle?.visibility ?? 0;
+
+            // 選擇較清晰的那隻腳判斷朝向
+            if (leftVis > 0.5 || rightVis > 0.5) {
+                const ankle = (leftVis > rightVis) ? leftAnkle : rightAnkle;
+                const toe = (leftVis > rightVis) ? leftToe : rightToe;
+                if (ankle && toe && Math.abs(toe.x - ankle.x) > 0.01) {
+                    return (toe.x > ankle.x) ? 1.0 : -1.0;
+                }
+            }
+        }
+
+        // 次要輔助：鼻部 -> 耳朵
         const nose = landmarks[this.NOSE];
         const leftEar = landmarks[this.LEFT_EAR];
         const rightEar = landmarks[this.RIGHT_EAR];
         
-        if (!nose || (!leftEar && !rightEar)) return 1.0;
+        if (nose && (leftEar || rightEar)) {
+            const ear = ((leftEar?.visibility ?? 0) > (rightEar?.visibility ?? 0)) ? leftEar : rightEar;
+            if (ear && Math.abs(nose.x - ear.x) > 0.01) {
+                return (nose.x > ear.x) ? 1.0 : -1.0;
+            }
+        }
 
-        // 選擇可見度較高的耳朵進行基準比較
-        const ear = ((leftEar?.visibility ?? 0) > (rightEar?.visibility ?? 0)) ? leftEar : rightEar;
-        if (!ear) return 1.0;
-
-        return (nose.x > ear.x) ? 1.0 : -1.0;
+        return 1.0; // 最終回退：預設朝右
     }
 
     /**
@@ -49,10 +75,18 @@ export class SpineKinematicsHPC {
             return 90.0; // 降級回傳標準直立角度
         }
 
-        // 1. 動態決定使用左側或右側 (基於可見度 Visibility，避開轉身時的遮擋噪點)
+        // 1. 動態決定使用左側或右側 (基於可見度 Visibility)
+        // 【工業級強化】增加一個微小的可見度閾值 (Hysteresis)，減少在正側身時左右點頻繁切換導致的跳動
         const leftShoulderVis = landmarks[this.LEFT_SHOULDER]?.visibility ?? 0;
         const rightShoulderVis = landmarks[this.RIGHT_SHOULDER]?.visibility ?? 0;
-        const isLeftVisible = leftShoulderVis > rightShoulderVis;
+        const leftHipVis = landmarks[this.LEFT_HIP]?.visibility ?? 0;
+        const rightHipVis = landmarks[this.RIGHT_HIP]?.visibility ?? 0;
+
+        const leftTotalVis = leftShoulderVis + leftHipVis;
+        const rightTotalVis = rightShoulderVis + rightHipVis;
+        
+        // 只有當右側顯著比左側穩定時才切換，否則預設偏好當前較明顯的一側
+        const isLeftVisible = leftTotalVis >= (rightTotalVis * 0.9);
         
         const shoulderIdx = isLeftVisible ? this.LEFT_SHOULDER : this.RIGHT_SHOULDER;
         const hipIdx = isLeftVisible ? this.LEFT_HIP : this.RIGHT_HIP;
@@ -96,7 +130,13 @@ export class SpineKinematicsHPC {
         }
 
         // 2. 取得人體朝向並進行 X 軸對齊修正
-        const facing = this.getFacingDirection(landmarks);
+        // 【工業級強化】如果 DLT 引擎提供了解析物理平面前方的 Hint，則以此為優先，因為標配點最穩定
+        let facing = 1.0;
+        if (dltEngine && dltEngine.facingHint !== undefined) {
+            facing = dltEngine.facingHint;
+        } else {
+            facing = this.getFacingDirection(landmarks);
+        }
         
         // 將 dx 乘上朝向。朝右(1)保持不變；朝左(-1)則反轉符號
         // 這一步能確保：只要是「往前胸俯身」，adjustedDx 永遠為正；「往後背仰身」，adjustedDx 永遠為負
@@ -110,18 +150,11 @@ export class SpineKinematicsHPC {
         // 3. 使用 Atan2 計算與 X 平面的夾角
         let angle = Math.atan2(dy, adjustedDx) * this.rad2deg;
 
-        // 4. 角度邊界鉗制與負值防守（肩膀低於髖部時為負值）
-        // angle 的範圍預設在 -180 ~ 180 之間：
-        // 0 ~ 90: 正常俯身
-        // 90 ~ 180: 向後仰身
-        // 0 ~ -90: 過度俯身 (肩膀低於髖部) -> 保留負值！
-        // -90 ~ -180: 極度向後仰身超過水平 (人類極限外) -> 鉗制為 180
-        
-        if (angle < -90) {
-            angle = 180.0; 
-        } else if (angle > 180) {
-            angle = 180.0; 
-        }
+        // 4. 角度邊界鉗制與負值防守
+        // 移除先前的強制鉗制 (angle < -90 -> 180) 來解決「在零界點與負值交界時會突跳為 180 度」的異常。
+        // 改為平滑的連續角度空間，允許自然的正負過渡 (Bounce between positive and negative values)。
+        while (angle <= -180.0) angle += 360.0;
+        while (angle > 180.0) angle -= 360.0;
 
         return angle;
     }
