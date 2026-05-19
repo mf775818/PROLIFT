@@ -8,11 +8,9 @@ import { DepthCalibratorHPC } from '../lib/hpc/DepthCalibratorHPC';
 import { PhysicsEngineHPC } from '../lib/hpc/PhysicsEngineHPC';
 import { BiomechanicsProjectiveHPC } from '../lib/hpc/BiomechanicsProjectiveHPC';
 import { KalmanSmoother1D } from '../lib/hpc/KalmanSmoother';
-import { ProjectiveMathHPC } from '../lib/hpc/ProjectiveMathHPC';
 import { OnsetDetectorHPC } from '../lib/hpc/OnsetDetectorHPC';
 import { SpineKinematicsHPC } from '../lib/hpc/SpineKinematicsHPC';
 import { AnkleKinematicsHPC } from '../lib/hpc/AnkleKinematicsHPC';
-import { EllipseFitterHPC } from '../lib/hpc/EllipseFitterHPC';
 
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
@@ -522,13 +520,15 @@ class OpenCVTracker {
             cv.cvtColor(src, fullNextGray, cv.COLOR_RGBA2GRAY, 0); 
             this.clahe.apply(fullNextGray, fullNextGray);
             
-            // --- INDUSTRIAL OPTIMIZATION: ROI Cropping ---
-            const padding = 50;
-            // Calculate a safe extended bounding box for tracking
-            const rx = Math.max(0, this.currentROI.x - padding);
-            const ry = Math.max(0, this.currentROI.y - padding);
-            const rw = Math.min(fullNextGray.cols - rx, this.currentROI.width + padding * 2);
-            const rh = Math.min(fullNextGray.rows - ry, this.currentROI.height + padding * 2);
+            // --- INDUSTRIAL OPTIMIZATION: ROI Cropping (2.0x Expansion) ---
+            // 將搜尋範圍由固定 Padding 改為根據 ROI 大小的 2.0 倍動態擴張，減少大幅度動作導致的掉幀
+            const paddingX = this.currentROI.width * 0.5; // 雙側各擴展 50%，總搜尋寬度為 2.0x
+            const paddingY = this.currentROI.height * 0.5;
+            
+            const rx = Math.max(0, this.currentROI.x - paddingX);
+            const ry = Math.max(0, this.currentROI.y - paddingY);
+            const rw = Math.min(fullNextGray.cols - rx, this.currentROI.width + paddingX * 2);
+            const rh = Math.min(fullNextGray.rows - ry, this.currentROI.height + paddingY * 2);
             
             const roiRect = new cv.Rect(rx, ry, rw, rh);
             
@@ -547,10 +547,10 @@ class OpenCVTracker {
             err = new cv.Mat();
             
             // --- 🐒C++++ INDUSTRIAL OPTIMIZATION: Unified Optical Flow ---
-            // 直接為所有平台開啟 31x31 大視窗與深層金字塔。
-            // 電腦版 CPU 計算 31x31 切片只需 <1ms，不會成為瓶頸，反而能徹底解決「快速移動失焦」問題。
-            const winSize = new cv.Size(31, 31); 
-            const maxLevel = 4;
+            // 動態調整搜索視窗：移動端下修至 31x31 以維持流暢度，電腦端維持 41x41。
+            const isMobile = window.matchMedia('(pointer: coarse)').matches;
+            const winSize = isMobile ? new cv.Size(31, 31) : new cv.Size(41, 41); 
+            const maxLevel = 6; // 增加金字塔層級：從 4 提升至 6，擴大跨幀捕捉範圍
             
             const termCrit = new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 20, 0.01);
 
@@ -737,13 +737,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const lastDltDragCoordsRef = useRef<{x: number, y: number} | null>(null);
   const [showMagnifier, setShowMagnifier] = useState(false);
   const [magnifierCoords, setMagnifierCoords] = useState<{x: number, y: number}>({x: 0, y: 0});
-
-  const [ellipseVisualData, setEllipseVisualData] = useState<{ 
-      points: {x: number, y: number}[], 
-      qMatrix: Float64Array | null, 
-      ellipseProps: { cx: number, cy: number, a: number, b: number, angleRad: number } | null 
-  } | null>(null);
-  const ellipseFitterRef = useRef(new EllipseFitterHPC());
 
   useEffect(() => {
     isDltConfirmedRef.current = isDltConfirmed;
@@ -1409,81 +1402,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           setParallelDltEdge(null);
           lastDltDragCoordsRef.current = null;
       }
-
-      if (isSelectingROI && dragStart && normalizedROI && videoRef.current) {
-          try {
-              const cv = g_cv || (window as any).cv;
-              if (cv && cv.Mat) {
-                  const tempCanvas = document.createElement('canvas');
-                  tempCanvas.width = videoLayout.width;
-                  tempCanvas.height = videoLayout.height;
-                  const ctx = tempCanvas.getContext('2d');
-                  if (ctx) {
-                      ctx.drawImage(videoRef.current, 0, 0, tempCanvas.width, tempCanvas.height);
-                      const src = cv.imread(tempCanvas);
-                      const gray = new cv.Mat();
-                      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-
-                      const rx = Math.floor(normalizedROI.x * tempCanvas.width);
-                      const ry = Math.floor(normalizedROI.y * tempCanvas.height);
-                      const rw = Math.floor(normalizedROI.width * tempCanvas.width);
-                      const rh = Math.floor(normalizedROI.height * tempCanvas.height);
-
-                      if (rw > 10 && rh > 10) {
-                          const roiRect = new cv.Rect(rx, ry, rw, rh);
-                          const roiMat = gray.roi(roiRect);
-                          
-                          const subpixelPoints = ellipseFitterRef.current.extractSubpixelEdges(cv, roiMat, roiRect);
-                          const fitResult = ellipseFitterRef.current.fitEllipseConicMatrix(cv, subpixelPoints);
-
-                          // UI Downsampling: MinMax Group Extremum to relieve UI pressure
-                          let renderPoints = subpixelPoints;
-                          if (subpixelPoints.length > 50) {
-                              let minX = Infinity;
-                              let maxX = -Infinity;
-                              for (const p of subpixelPoints) {
-                                  if (p.x < minX) minX = p.x;
-                                  if (p.x > maxX) maxX = p.x;
-                              }
-                              
-                              const numBuckets = 30;
-                              const buckets = new Map<number, {minY: typeof subpixelPoints[0], maxY: typeof subpixelPoints[0]}>();
-                              for (const p of subpixelPoints) {
-                                  const bucketIdx = Math.floor(((p.x - minX) / (maxX - minX + 1e-5)) * numBuckets);
-                                  const bucket = buckets.get(bucketIdx);
-                                  if (!bucket) {
-                                      buckets.set(bucketIdx, {minY: p, maxY: p});
-                                  } else {
-                                      if (p.y < bucket.minY.y) bucket.minY = p;
-                                      if (p.y > bucket.maxY.y) bucket.maxY = p;
-                                  }
-                              }
-                              
-                              renderPoints = [];
-                              buckets.forEach(b => {
-                                  renderPoints.push(b.minY);
-                                  if (b.minY !== b.maxY) renderPoints.push(b.maxY);
-                              });
-                          }
-
-                          setEllipseVisualData({
-                              points: renderPoints,
-                              qMatrix: fitResult?.qMatrix || null,
-                              ellipseProps: fitResult?.ellipseProps || null
-                          });
-                          
-                          roiMat.delete();
-                      }
-
-                      src.delete();
-                      gray.delete();
-                  }
-              }
-          } catch (e) {
-              console.error('Ellipse preview error:', e);
-          }
-      }
-
       setDragStart(null);
   };
 
@@ -1709,57 +1627,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
              if (currentTime > 0 && cvTracker.isInitialized) {
                  try {
                     const res = cvTracker.track(ctx);
-                    if (res) {
-                        trackedCenter = { x: (res.x + res.width / 2) / procW, y: (res.y + res.height / 2) / procH };
-                        
-                        // --- 🐒C++++: Projective Geometry & Subpixel Refinement ---
-                        const cv = g_cv || (window as any).cv;
-                        if (cv && cv.Mat) {
-                            const src = cv.imread(analysisCanvas);
-                            const gray = new cv.Mat();
-                            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-
-                            let rx = Math.floor(res.x);
-                            let ry = Math.floor(res.y);
-                            let rw = Math.floor(res.width);
-                            let rh = Math.floor(res.height);
-
-                            if (rw > 10 && rh > 10) {
-                                // Add small padding for edge detection
-                                const padding = Math.max(rw, rh) * 0.2;
-                                rx = Math.max(0, Math.floor(rx - padding));
-                                ry = Math.max(0, Math.floor(ry - padding));
-                                rw = Math.min(procW - rx, Math.floor(rw + padding * 2));
-                                rh = Math.min(procH - ry, Math.floor(rh + padding * 2));
-
-                                const roiRect = new cv.Rect(rx, ry, rw, rh);
-                                const roiMat = gray.roi(roiRect);
-                                
-                                const subpixelPoints = ellipseFitterRef.current.extractSubpixelEdges(cv, roiMat, roiRect);
-                                const fitResult = ellipseFitterRef.current.fitEllipseConicMatrix(cv, subpixelPoints);
-                                
-                                if (fitResult && fitResult.qMatrix) {
-                                    const H = hMatrixRef.current;
-                                    // vanishing line is the 3rd row of Homography Matrix representing the line at infinity
-                                    const vanishingLine = new Float64Array([H[6], H[7], H[8]]);
-                                    
-                                    const pMath = new ProjectiveMathHPC();
-                                    const outCenter = new Float64Array(3);
-                                    
-                                    const successP = pMath.computeTruePhysicalCenter(outCenter, fitResult.qMatrix, vanishingLine);
-                                    if (successP) {
-                                        trackedCenter = { 
-                                           x: outCenter[0] / procW, 
-                                           y: outCenter[1] / procH 
-                                        };
-                                    }
-                                }
-                                roiMat.delete();
-                            }
-                            src.delete();
-                            gray.delete();
-                        }
-                    }
+                    if (res) trackedCenter = { x: (res.x + res.width / 2) / procW, y: (res.y + res.height / 2) / procH };
                  } catch (cvTrackErr) {
                     console.warn("OpenCV Tracking error:", cvTrackErr);
                  }
@@ -3091,33 +2959,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                           )}
                           <div className="absolute -top-6 left-0 bg-yellow-500 text-black text-[10px] font-bold px-1 whitespace-nowrap">TRACKING TARGET</div>
                       </div>
-                  )}
-
-                  {isSelectingROI && ellipseVisualData && (
-                      <svg className="absolute top-0 left-0 w-full h-full pointer-events-none z-30" style={{ width: videoLayout.width, height: videoLayout.height }}>
-                          <defs>
-                              <radialGradient id="ellipse-scan" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
-                                  <stop offset="0%" stopColor="rgba(24, 204, 255, 0)" />
-                                  <stop offset="80%" stopColor="rgba(24, 204, 255, 0.4)" />
-                                  <stop offset="100%" stopColor="rgba(24, 204, 255, 0.8)" />
-                              </radialGradient>
-                          </defs>
-                          {ellipseVisualData.points.map((p, i) => (
-                              <circle key={i} cx={p.x} cy={p.y} r="1.5" fill="#00e5ff" opacity="0.8" className="animate-pulse" style={{ animationDelay: `${(i % 5) * 0.2}s` }} />
-                          ))}
-                          {ellipseVisualData.ellipseProps && (
-                              <ellipse 
-                                  cx={ellipseVisualData.ellipseProps.cx} 
-                                  cy={ellipseVisualData.ellipseProps.cy} 
-                                  rx={ellipseVisualData.ellipseProps.a} 
-                                  ry={ellipseVisualData.ellipseProps.b}
-                                  fill="url(#ellipse-scan)"
-                                  stroke="#00e5ff" strokeWidth="2"
-                                  transform={`rotate(${ellipseVisualData.ellipseProps.angleRad * 180 / Math.PI} ${ellipseVisualData.ellipseProps.cx} ${ellipseVisualData.ellipseProps.cy})`}
-                                  className="animate-[pulse_1.5s_ease-in-out_infinite]"
-                              />
-                          )}
-                      </svg>
                   )}
 
                   {isSelectingDLT && analysisState === AnalysisState.IDLE && (

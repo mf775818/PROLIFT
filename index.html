@@ -37,7 +37,23 @@
       body {
         background-color: #09090b; /* zinc-950 */
         color: #fff;
+        /* Disable text selection and copy globally */
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none; /* Disable long-press context menu on iOS */
       }
+      
+      /* Re-enable selection for inputs and allowed areas */
+      input, textarea, [contenteditable="true"], .allow-select {
+        -webkit-user-select: text;
+        -moz-user-select: text;
+        -ms-user-select: text;
+        user-select: text;
+        -webkit-touch-callout: default;
+      }
+
       /* Custom Scrollbar */
       ::-webkit-scrollbar {
         width: 6px;
