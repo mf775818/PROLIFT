@@ -11,6 +11,7 @@ import { KalmanSmoother1D } from '../lib/hpc/KalmanSmoother';
 import { OnsetDetectorHPC } from '../lib/hpc/OnsetDetectorHPC';
 import { SpineKinematicsHPC } from '../lib/hpc/SpineKinematicsHPC';
 import { AnkleKinematicsHPC } from '../lib/hpc/AnkleKinematicsHPC';
+import { EllipseFitterHPC } from '../lib/hpc/EllipseFitterHPC';
 
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
@@ -736,6 +737,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const [showMagnifier, setShowMagnifier] = useState(false);
   const [magnifierCoords, setMagnifierCoords] = useState<{x: number, y: number}>({x: 0, y: 0});
 
+  const [ellipseVisualData, setEllipseVisualData] = useState<{ 
+      points: {x: number, y: number}[], 
+      qMatrix: Float64Array | null, 
+      ellipseProps: { cx: number, cy: number, a: number, b: number, angleRad: number } | null 
+  } | null>(null);
+  const ellipseFitterRef = useRef(new EllipseFitterHPC());
+
   useEffect(() => {
     isDltConfirmedRef.current = isDltConfirmed;
     hMatrixRef.current = hMatrix;
@@ -1400,6 +1408,81 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           setParallelDltEdge(null);
           lastDltDragCoordsRef.current = null;
       }
+
+      if (isSelectingROI && dragStart && normalizedROI && videoRef.current) {
+          try {
+              const cv = g_cv || (window as any).cv;
+              if (cv && cv.Mat) {
+                  const tempCanvas = document.createElement('canvas');
+                  tempCanvas.width = videoLayout.width;
+                  tempCanvas.height = videoLayout.height;
+                  const ctx = tempCanvas.getContext('2d');
+                  if (ctx) {
+                      ctx.drawImage(videoRef.current, 0, 0, tempCanvas.width, tempCanvas.height);
+                      const src = cv.imread(tempCanvas);
+                      const gray = new cv.Mat();
+                      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+                      const rx = Math.floor(normalizedROI.x * tempCanvas.width);
+                      const ry = Math.floor(normalizedROI.y * tempCanvas.height);
+                      const rw = Math.floor(normalizedROI.width * tempCanvas.width);
+                      const rh = Math.floor(normalizedROI.height * tempCanvas.height);
+
+                      if (rw > 10 && rh > 10) {
+                          const roiRect = new cv.Rect(rx, ry, rw, rh);
+                          const roiMat = gray.roi(roiRect);
+                          
+                          const subpixelPoints = ellipseFitterRef.current.extractSubpixelEdges(cv, roiMat, roiRect);
+                          const fitResult = ellipseFitterRef.current.fitEllipseConicMatrix(cv, subpixelPoints);
+
+                          // UI Downsampling: MinMax Group Extremum to relieve UI pressure
+                          let renderPoints = subpixelPoints;
+                          if (subpixelPoints.length > 50) {
+                              let minX = Infinity;
+                              let maxX = -Infinity;
+                              for (const p of subpixelPoints) {
+                                  if (p.x < minX) minX = p.x;
+                                  if (p.x > maxX) maxX = p.x;
+                              }
+                              
+                              const numBuckets = 30;
+                              const buckets = new Map<number, {minY: typeof subpixelPoints[0], maxY: typeof subpixelPoints[0]}>();
+                              for (const p of subpixelPoints) {
+                                  const bucketIdx = Math.floor(((p.x - minX) / (maxX - minX + 1e-5)) * numBuckets);
+                                  const bucket = buckets.get(bucketIdx);
+                                  if (!bucket) {
+                                      buckets.set(bucketIdx, {minY: p, maxY: p});
+                                  } else {
+                                      if (p.y < bucket.minY.y) bucket.minY = p;
+                                      if (p.y > bucket.maxY.y) bucket.maxY = p;
+                                  }
+                              }
+                              
+                              renderPoints = [];
+                              buckets.forEach(b => {
+                                  renderPoints.push(b.minY);
+                                  if (b.minY !== b.maxY) renderPoints.push(b.maxY);
+                              });
+                          }
+
+                          setEllipseVisualData({
+                              points: renderPoints,
+                              qMatrix: fitResult?.qMatrix || null,
+                              ellipseProps: fitResult?.ellipseProps || null
+                          });
+                          
+                          roiMat.delete();
+                      }
+
+                      src.delete();
+                      gray.delete();
+                  }
+              }
+          } catch (e) {
+              console.error('Ellipse preview error:', e);
+          }
+      }
+
       setDragStart(null);
   };
 
@@ -2957,6 +3040,33 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                           )}
                           <div className="absolute -top-6 left-0 bg-yellow-500 text-black text-[10px] font-bold px-1 whitespace-nowrap">TRACKING TARGET</div>
                       </div>
+                  )}
+
+                  {isSelectingROI && ellipseVisualData && (
+                      <svg className="absolute top-0 left-0 w-full h-full pointer-events-none z-30" style={{ width: videoLayout.width, height: videoLayout.height }}>
+                          <defs>
+                              <radialGradient id="ellipse-scan" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+                                  <stop offset="0%" stopColor="rgba(24, 204, 255, 0)" />
+                                  <stop offset="80%" stopColor="rgba(24, 204, 255, 0.4)" />
+                                  <stop offset="100%" stopColor="rgba(24, 204, 255, 0.8)" />
+                              </radialGradient>
+                          </defs>
+                          {ellipseVisualData.points.map((p, i) => (
+                              <circle key={i} cx={p.x} cy={p.y} r="1.5" fill="#00e5ff" opacity="0.8" className="animate-pulse" style={{ animationDelay: `${(i % 5) * 0.2}s` }} />
+                          ))}
+                          {ellipseVisualData.ellipseProps && (
+                              <ellipse 
+                                  cx={ellipseVisualData.ellipseProps.cx} 
+                                  cy={ellipseVisualData.ellipseProps.cy} 
+                                  rx={ellipseVisualData.ellipseProps.a} 
+                                  ry={ellipseVisualData.ellipseProps.b}
+                                  fill="url(#ellipse-scan)"
+                                  stroke="#00e5ff" strokeWidth="2"
+                                  transform={`rotate(${ellipseVisualData.ellipseProps.angleRad * 180 / Math.PI} ${ellipseVisualData.ellipseProps.cx} ${ellipseVisualData.ellipseProps.cy})`}
+                                  className="animate-[pulse_1.5s_ease-in-out_infinite]"
+                              />
+                          )}
+                      </svg>
                   )}
 
                   {isSelectingDLT && analysisState === AnalysisState.IDLE && (
