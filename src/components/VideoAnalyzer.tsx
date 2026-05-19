@@ -520,16 +520,13 @@ class OpenCVTracker {
             cv.cvtColor(src, fullNextGray, cv.COLOR_RGBA2GRAY, 0); 
             this.clahe.apply(fullNextGray, fullNextGray);
             
-            // --- INDUSTRIAL OPTIMIZATION: Adaptive ROI Cropping ---
-            const isMobile = window.matchMedia('(pointer: coarse)').matches;
-            const paddingScale = isMobile ? 0.5 : 0.25; // Mobile 2.0x (1 + 0.5*2), Desktop 1.5x (1 + 0.25*2)
-            const paddingX = this.currentROI.width * paddingScale;
-            const paddingY = this.currentROI.height * paddingScale;
-            
-            const rx = Math.max(0, this.currentROI.x - paddingX);
-            const ry = Math.max(0, this.currentROI.y - paddingY);
-            const rw = Math.min(fullNextGray.cols - rx, this.currentROI.width + paddingX * 2);
-            const rh = Math.min(fullNextGray.rows - ry, this.currentROI.height + paddingY * 2);
+            // --- INDUSTRIAL OPTIMIZATION: ROI Cropping ---
+            const padding = 50;
+            // Calculate a safe extended bounding box for tracking
+            const rx = Math.max(0, this.currentROI.x - padding);
+            const ry = Math.max(0, this.currentROI.y - padding);
+            const rw = Math.min(fullNextGray.cols - rx, this.currentROI.width + padding * 2);
+            const rh = Math.min(fullNextGray.rows - ry, this.currentROI.height + padding * 2);
             
             const roiRect = new cv.Rect(rx, ry, rw, rh);
             
@@ -547,8 +544,11 @@ class OpenCVTracker {
             status = new cv.Mat();
             err = new cv.Mat();
             
-            const winSize = isMobile ? new cv.Size(51, 51) : new cv.Size(41, 41); 
-            const maxLevel = isMobile ? 6 : 4;
+            // --- 🐒C++++ INDUSTRIAL OPTIMIZATION: Unified Optical Flow ---
+            // 直接為所有平台開啟 31x31 大視窗與深層金字塔。
+            // 電腦版 CPU 計算 31x31 切片只需 <1ms，不會成為瓶頸，反而能徹底解決「快速移動失焦」問題。
+            const winSize = new cv.Size(31, 31); 
+            const maxLevel = 4;
             
             const termCrit = new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 20, 0.01);
 

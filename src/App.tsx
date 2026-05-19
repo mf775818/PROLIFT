@@ -833,12 +833,12 @@ const App = () => {
                                <span className="text-[10px] text-zinc-500 uppercase font-bold">Bar Path Efficiency</span>
                                <span className={`text-xs font-bold ${efficiencyScore > 85 ? 'text-emerald-400' : 'text-yellow-400'}`}>
                                    {efficiencyScore.toFixed(1)}/100
-                                </span>
-                            </div>
-                            <div className="h-2 bg-zinc-700 rounded-full overflow-hidden">
-                                <div className={`h-full ${efficiencyScore > 85 ? 'bg-emerald-500' : 'bg-yellow-500'}`} style={{ width: `${efficiencyScore}%` }}></div>
-                            </div>
-                        </div>
+                               </span>
+                           </div>
+                           <div className="h-2 bg-zinc-700 rounded-full overflow-hidden">
+                               <div className={`h-full ${efficiencyScore > 85 ? 'bg-emerald-500' : 'bg-yellow-500'}`} style={{ width: `${efficiencyScore}%` }}></div>
+                           </div>
+                       </div>
                     </div>
                 )}
             </div>
