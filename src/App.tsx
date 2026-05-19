@@ -7,31 +7,40 @@ import { OnsetDetectorHPC } from './lib/hpc/OnsetDetectorHPC';
 
 // --- UX COMPONENT: RESIZER HANDLE ---
 const Resizer = ({ orientation, onResizeStart, isResizing }: { orientation: 'vertical' | 'horizontal', onResizeStart: (e: React.MouseEvent | React.TouchEvent) => void, isResizing: boolean }) => {
+    const isVert = orientation === 'vertical';
     return (
         <div 
             className={`group relative z-50 flex items-center justify-center transition-colors touch-none
-                ${orientation === 'vertical' 
-                    ? 'w-3 hover:w-3 cursor-col-resize -ml-1.5 -mr-1.5 h-full' 
+                ${isVert 
+                    ? 'w-6 cursor-col-resize -ml-3 -mr-3 h-full' 
                     : 'h-6 w-full cursor-row-resize -mt-3 -mb-3'
                 }`}
             onMouseDown={onResizeStart}
             onTouchStart={onResizeStart}
         >
-            {/* Hit Area & Visual Line */}
-            <div className={`transition-all duration-300 bg-zinc-800 group-hover:bg-yellow-500/50 
-                ${orientation === 'vertical' 
-                    ? `w-[1px] h-full ${isResizing ? 'bg-yellow-500 w-[2px]' : ''}` 
-                    : `h-[1px] w-full ${isResizing ? 'bg-yellow-500 h-[2px]' : ''}`
+            {/* Ambient Hit Area Background (Invisible until hover) */}
+            <div className={`absolute inset-0 transition-opacity duration-300 opacity-0 group-hover:opacity-100 ${isResizing ? 'opacity-100' : ''}
+                ${isVert ? 'bg-gradient-to-r from-transparent via-yellow-500/10 to-transparent' : 'bg-gradient-to-b from-transparent via-yellow-500/10 to-transparent'}`} 
+            />
+
+            {/* Visual Line spanning the full length */}
+            <div className={`absolute transition-all duration-300 ${isResizing ? 'bg-yellow-400' : 'bg-zinc-800 group-hover:bg-yellow-500'} 
+                ${isVert 
+                    ? `w-[1px] h-full ${isResizing ? 'w-[2px] shadow-[0_0_8px_rgba(234,179,8,0.5)]' : 'group-hover:w-[2px]'}` 
+                    : `h-[1px] w-full ${isResizing ? 'h-[2px] shadow-[0_0_8px_rgba(234,179,8,0.5)]' : 'group-hover:h-[2px]'}`
                 }`} 
             />
             
-            {/* Affordance Handle (Pill) */}
-            <div className={`absolute bg-zinc-700 group-hover:bg-yellow-500 rounded-full flex items-center justify-center gap-0.5 shadow-lg border border-zinc-900 transition-colors
-                ${orientation === 'vertical' 
-                    ? 'w-1 h-8 left-1/2 -translate-x-1/2' 
-                    : 'h-1 w-12 top-1/2 -translate-y-1/2'
+            {/* Affordance Handle (Grip Dots instead of Pill) */}
+            <div className={`absolute flex items-center justify-center gap-[3px] transition-transform duration-300 ${isResizing ? 'scale-110' : 'group-hover:scale-110'}
+                ${isVert 
+                    ? 'flex-col left-1/2 -translate-x-1/2 w-3 h-10 bg-zinc-900/80 rounded-full border border-zinc-700/50 backdrop-blur-sm shadow-sm' 
+                    : 'flex-row top-1/2 -translate-y-1/2 h-3 w-10 bg-zinc-900/80 rounded-full border border-zinc-700/50 backdrop-blur-sm shadow-sm'
                 }`}
             >
+                <div className={`rounded-full transition-colors ${isResizing ? 'bg-yellow-400' : 'bg-zinc-500 group-hover:bg-yellow-400'} w-1 h-1`} />
+                <div className={`rounded-full transition-colors ${isResizing ? 'bg-yellow-400' : 'bg-zinc-500 group-hover:bg-yellow-400'} w-1 h-1`} />
+                <div className={`rounded-full transition-colors ${isResizing ? 'bg-yellow-400' : 'bg-zinc-500 group-hover:bg-yellow-400'} w-1 h-1`} />
             </div>
         </div>
     );
@@ -78,11 +87,48 @@ const App = () => {
 
   // --- RESIZABLE LAYOUT STATE ---
   const [layout, setLayout] = useState({
-      rightWidth: 380,
+      rightWidth: 760,
       mobileVideoHeightPct: 45, // 45% height by default on mobile
       chartHeightPct: 55 // 55% height by default on desktop
   });
   const [isResizing, setIsResizing] = useState(false);
+
+  // --- ENGINE INITIALIZATION STATE ---
+  const [initLog, setInitLog] = useState<{name: string, status: 'loading'|'ready'|'error'}[]>([
+    {name: 'Core Analysis Engine', status: 'loading'},
+    {name: 'Environment Calibration Engine', status: 'loading'},
+    {name: 'Motion Tracking System', status: 'loading'},
+  ]);
+  const [isInitComplete, setIsInitComplete] = useState(false);
+  const [initFailed, setInitFailed] = useState(false);
+
+  useEffect(() => {
+     let checkCount = 0;
+     const maxChecks = 300; // 30 seconds
+
+     const initInterval = setInterval(() => {
+        checkCount++;
+        
+        let poseReady = !!(window as any).Pose;
+        let cvReady = (window as any).cv && (window as any).cv.Mat;
+
+        setInitLog([
+            {name: 'Core Analysis Engine', status: poseReady ? 'ready' : (checkCount >= maxChecks ? 'error' : 'loading')},
+            {name: 'Environment Calibration Engine', status: cvReady ? 'ready' : (checkCount >= maxChecks ? 'error' : 'loading')},
+            {name: 'Motion Tracking System', status: cvReady ? 'ready' : (checkCount >= maxChecks ? 'error' : 'loading')},
+        ]);
+
+        if (poseReady && cvReady) {
+            clearInterval(initInterval);
+            setTimeout(() => setIsInitComplete(true), 800); 
+        } else if (checkCount >= maxChecks) {
+            clearInterval(initInterval);
+            setInitFailed(true);
+        }
+     }, 100);
+
+     return () => clearInterval(initInterval);
+  }, []);
 
   // The Display Metrics switch between Cursor (Scrubbing) and Live (Playback)
   const displayMetrics = cursorMetrics || liveMetrics;
@@ -316,6 +362,49 @@ const App = () => {
 
   return (
     <div className={`h-[100dvh] w-full flex flex-col bg-zinc-950 text-white font-sans overflow-hidden ${isResizing ? 'cursor-grabbing select-none' : ''}`}>
+      {/* --- STARTUP INITIALIZATION OVERLAY --- */}
+      {!isInitComplete && (
+          <div className="fixed inset-0 z-[100] bg-zinc-950 flex flex-col items-center justify-center p-6">
+             <div className="max-w-md w-full bg-zinc-900 border border-zinc-800 p-8 rounded-2xl shadow-2xl flex flex-col items-center">
+                 <div className="w-16 h-16 bg-gradient-to-br from-yellow-400 to-yellow-600 rounded-2xl flex items-center justify-center text-black font-bold mb-6 shadow-[0_0_30px_rgba(234,179,8,0.3)]">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2l-4 4-4-4"/><path d="M8.5 2C7.12 2 6 3.12 6 4.5V9h12V4.5C18 3.12 16.88 2 15.5 2"/></svg>
+                 </div>
+                 <h2 className="text-xl font-bold tracking-tight text-white mb-2">INITIALIZING PROLIFT AI</h2>
+                 <p className="text-sm text-zinc-400 text-center mb-8">Loading core computer vision and analysis engines to ensure industrial-grade accuracy.</p>
+                 
+                 <div className="w-full space-y-4 mb-8">
+                     {initLog.map((log, idx) => (
+                         <div key={idx} className="flex flex-col bg-zinc-950 p-4 rounded-xl border border-zinc-800">
+                             <div className="flex items-center justify-between">
+                                 <span className="text-xs font-mono font-bold text-zinc-300">{log.name}</span>
+                                 <div className="flex items-center gap-2">
+                                     {log.status === 'loading' && <div className="w-3.5 h-3.5 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"></div>}
+                                     {log.status === 'ready' && <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                                     {log.status === 'error' && <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>}
+                                     <span className={`text-[10px] font-bold uppercase ${log.status === 'ready' ? 'text-green-500' : log.status === 'error' ? 'text-red-500' : 'text-yellow-500'}`}>{log.status}</span>
+                                 </div>
+                             </div>
+                         </div>
+                     ))}
+                 </div>
+
+                 {initFailed && (
+                     <button 
+                        onClick={() => window.location.reload()}
+                        className="w-full py-3 bg-red-600 hover:bg-red-500 text-white rounded-lg font-bold tracking-wider text-sm shadow-[0_0_15px_rgba(239,68,68,0.3)] transition-colors"
+                     >
+                         RELOAD / RE-SYNC ENGINES
+                     </button>
+                 )}
+                 {!initFailed && (
+                     <div className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono animate-pulse">
+                         Please wait, analyzing environment...
+                     </div>
+                 )}
+             </div>
+          </div>
+      )}
+
       {/* Mobile/Desktop Header */}
       <header className="h-16 lg:h-14 border-b border-zinc-800 bg-zinc-900/90 backdrop-blur flex items-center justify-between px-4 shrink-0 sticky top-0 z-50 shadow-sm overflow-x-auto overflow-y-hidden scrollbar-hide">
         <div className="flex items-center gap-3 shrink-0">
