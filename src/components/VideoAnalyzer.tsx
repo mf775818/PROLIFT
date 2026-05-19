@@ -1309,7 +1309,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                   const dot = (vCurX * vOppX + vCurY * vOppY) / (lenCur * lenOpp);
                   const angleDiff = Math.acos(Math.max(-1, Math.min(1, Math.abs(dot))));
                   
-                  const snapThreshold = 0.05; // radians (about 2.8 degrees)
+                  const snapThreshold = 0.0349; // radians (about 2 degrees)
                   if (angleDiff < snapThreshold) {
                       const mx = (pCur1.x + pCur2.x) / 2;
                       const my = (pCur1.y + pCur2.y) / 2;
@@ -2640,7 +2640,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                                   let ox = dltPoints[(oppIdx+1)%4].x - dltPoints[oppIdx].x;
                                   let oy = dltPoints[(oppIdx+1)%4].y - dltPoints[oppIdx].y;
                                   let dot = (vx*ox + vy*oy) / (curLen*oppLen);
-                                  return Math.acos(Math.max(-1, Math.min(1, Math.abs(dot)))) < 0.05;
+                                  return Math.acos(Math.max(-1, Math.min(1, Math.abs(dot)))) < 0.0349;
                               })();
                               // High visibility light green for contrast
                               const strokeColor = isGreen ? "#0af4d1" : (isDltConfirmed ? "#00e5ff" : "#f59e0b");
@@ -2672,7 +2672,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                                   let ox = dltPoints[(oppIdx+1)%4].x - dltPoints[oppIdx].x;
                                   let oy = dltPoints[(oppIdx+1)%4].y - dltPoints[oppIdx].y;
                                   let dot = (vx*ox + vy*oy) / (curLen*oppLen);
-                                  return Math.acos(Math.max(-1, Math.min(1, Math.abs(dot)))) < 0.05;
+                                  return Math.acos(Math.max(-1, Math.min(1, Math.abs(dot)))) < 0.0349;
                               })();
                               // High visibility light green for contrast
                               const strokeColor = isGreen ? "#0af4d1" : (isDltConfirmed ? "#00e5ff" : "#f59e0b");
