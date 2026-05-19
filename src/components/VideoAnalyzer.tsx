@@ -26,6 +26,7 @@ interface VideoAnalyzerProps {
   userHeightMm?: number | null;
   seekRequest?: {time: number, nonce: number} | null;
   onFileSelect?: (file: File) => void;
+  focusSide?: 'avg' | 'L' | 'R';
 }
 
 // --- TYPES ---
@@ -662,7 +663,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   barbellMass,
   userHeightMm,
   seekRequest,
-  onFileSelect
+  onFileSelect,
+  focusSide = 'avg'
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -2162,9 +2164,18 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       // --- SKELETON LAYER ---
       if (landmarks && landmarks.length > 0 && window.drawConnectors && window.drawLandmarks) {
           overlayCtx.save();
+          // Filter landmarks based on focusSide
+          const displayLandmarks = landmarks.map((lm, idx) => {
+              if (idx < 11) return lm; // Keep face points
+              const isLeft = idx % 2 === 1;
+              if (focusSide === 'L' && !isLeft) return { ...lm, visibility: 0 };
+              if (focusSide === 'R' && isLeft) return { ...lm, visibility: 0 };
+              return lm;
+          });
+
           overlayCtx.globalAlpha = 0.4; 
-          window.drawConnectors(overlayCtx, landmarks, window.POSE_CONNECTIONS, { color: 'rgba(255,255,255,0.6)', lineWidth: 2 });
-          window.drawLandmarks(overlayCtx, landmarks, { color: '#ffffff', lineWidth: 1, radius: 2 });
+          window.drawConnectors(overlayCtx, displayLandmarks, window.POSE_CONNECTIONS, { color: 'rgba(255,255,255,0.6)', lineWidth: 2 });
+          window.drawLandmarks(overlayCtx, displayLandmarks, { color: '#ffffff', lineWidth: 1, radius: 2 });
           overlayCtx.restore();
           
           const fontSize = Math.max(12, w * 0.025); 
@@ -2172,13 +2183,30 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           overlayCtx.textBaseline = 'middle';
 
           const drawBadgeAtIdx = (idx: number, text: string, color: string) => {
-              if (!landmarks[idx] || landmarks[idx].visibility < 0.3) return;
-              const x = landmarks[idx].x * w + 15;
-              const y = landmarks[idx].y * h;
+              if (!displayLandmarks[idx] || displayLandmarks[idx].visibility < 0.3) return;
+              
+              // Calculate horizontal center of the body based on shoulders and hips
+              let cx = 0.5;
+              let validCount = 0;
+              [11, 12, 23, 24].forEach(i => {
+                  if (displayLandmarks[i] && displayLandmarks[i].visibility > 0.3) {
+                      cx += displayLandmarks[i].x;
+                      validCount++;
+                  }
+              });
+              if (validCount > 0) cx = (cx - 0.5) / validCount;
+              
+              const isLeftOfCenter = displayLandmarks[idx].x < cx;
+              
               const padding = 4;
               const metrics = overlayCtx.measureText(text);
               const bgW = metrics.width + padding * 2;
               const bgH = fontSize + padding * 2;
+              
+              const offsetX = isLeftOfCenter ? -(bgW + 15) : 15;
+              const x = displayLandmarks[idx].x * w + offsetX;
+              const y = displayLandmarks[idx].y * h;
+              
               overlayCtx.save();
               overlayCtx.fillStyle = 'rgba(0,0,0,0.8)';
               overlayCtx.beginPath();
@@ -2188,33 +2216,109 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
               overlayCtx.fillText(text, x + padding, y);
               overlayCtx.restore();
           };
-
-          const kneeIdx = (landmarks[25]?.visibility || 0) > (landmarks[26]?.visibility || 0) ? 25 : 26;
-          drawBadgeAtIdx(kneeIdx, `K: ${(metric.kneeAngle || 0).toFixed(0)}°`, '#facc15');
           
-          const ankleIdx = (landmarks[27]?.visibility || 0) > (landmarks[28]?.visibility || 0) ? 27 : 28;
-          drawBadgeAtIdx(ankleIdx, `A: ${(metric.ankleAngle || 0).toFixed(0)}°`, '#10b981');
+          if (focusSide === 'all') {
+              // Draw both left and right if focusSide is 'all'
+              if (metric.lKneeAngle !== undefined) drawBadgeAtIdx(25, `K: ${(metric.lKneeAngle || 0).toFixed(0)}°`, '#facc15');
+              if (metric.rKneeAngle !== undefined) drawBadgeAtIdx(26, `K: ${(metric.rKneeAngle || 0).toFixed(0)}°`, '#facc15');
+              if (metric.lAnkleAngle !== undefined) drawBadgeAtIdx(27, `A: ${(metric.lAnkleAngle || 0).toFixed(0)}°`, '#10b981');
+              if (metric.rAnkleAngle !== undefined) drawBadgeAtIdx(28, `A: ${(metric.rAnkleAngle || 0).toFixed(0)}°`, '#10b981');
+              if (metric.lHipAngle !== undefined) drawBadgeAtIdx(23, `H: ${(metric.lHipAngle || 0).toFixed(0)}°`, '#60a5fa');
+              if (metric.rHipAngle !== undefined) drawBadgeAtIdx(24, `H: ${(metric.rHipAngle || 0).toFixed(0)}°`, '#60a5fa');
+              
+              // Draw back angle on the shoulder-hip line that has higher visibility
+              const hipIdx = (displayLandmarks[23]?.visibility || 0) > (displayLandmarks[24]?.visibility || 0) ? 23 : 24;
+              if (displayLandmarks[hipIdx] && displayLandmarks[hipIdx - 12] && displayLandmarks[hipIdx].visibility > 0.3 && displayLandmarks[hipIdx - 12].visibility > 0.3) {
+                  const shoulderIdx = hipIdx - 12;
+                  const backAngle = metric.backAngle || 0;
+                  
+                  let cx = 0.5;
+                  let validCount = 0;
+                  [11, 12, 23, 24].forEach(i => {
+                      if (displayLandmarks[i] && displayLandmarks[i].visibility > 0.3) {
+                          cx += displayLandmarks[i].x;
+                          validCount++;
+                      }
+                  });
+                  if (validCount > 0) cx = (cx - 0.5) / validCount;
 
-          const hipIdx = (landmarks[23]?.visibility || 0) > (landmarks[24]?.visibility || 0) ? 23 : 24;
-          drawBadgeAtIdx(hipIdx, `H: ${(metric.hipAngle || 0).toFixed(0)}°`, '#60a5fa');
-          
-          if (landmarks[hipIdx] && landmarks[hipIdx - 12] && landmarks[hipIdx].visibility > 0.3 && landmarks[hipIdx - 12].visibility > 0.3) {
-              const shoulderIdx = hipIdx - 12;
-              const backAngle = metric.backAngle || 0;
-              const midX = ((landmarks[shoulderIdx].x + landmarks[hipIdx].x) / 2) * w + 15;
-              const midY = ((landmarks[shoulderIdx].y + landmarks[hipIdx].y) / 2) * h;
-              const text = `B: ${backAngle.toFixed(0)}°`;
-              const metrics = overlayCtx.measureText(text);
-              const bgW = metrics.width + 8;
-              const bgH = fontSize + 8;
-              overlayCtx.save();
-              overlayCtx.fillStyle = 'rgba(0,0,0,0.8)';
-              overlayCtx.beginPath();
-              overlayCtx.roundRect(midX, midY - bgH / 2, bgW, bgH, 4);
-              overlayCtx.fill();
-              overlayCtx.fillStyle = '#a78bfa';
-              overlayCtx.fillText(text, midX + 4, midY);
-              overlayCtx.restore();
+                  const midLandmarkX = (displayLandmarks[shoulderIdx].x + displayLandmarks[hipIdx].x) / 2;
+                  const isLeftOfCenter = midLandmarkX < cx;
+
+                  const text = `B: ${backAngle.toFixed(0)}°`;
+                  const metrics = overlayCtx.measureText(text);
+                  const padding = 4;
+                  const bgW = metrics.width + padding * 2;
+                  const bgH = fontSize + padding * 2;
+                  
+                  const offsetX = isLeftOfCenter ? -(bgW + 15) : 15;
+                  const midX = midLandmarkX * w + offsetX;
+                  const midY = ((displayLandmarks[shoulderIdx].y + displayLandmarks[hipIdx].y) / 2) * h;
+
+                  overlayCtx.save();
+                  overlayCtx.fillStyle = 'rgba(0,0,0,0.8)';
+                  overlayCtx.beginPath();
+                  overlayCtx.roundRect(midX, midY - bgH / 2, bgW, bgH, 4);
+                  overlayCtx.fill();
+                  overlayCtx.fillStyle = '#a78bfa';
+                  overlayCtx.fillText(text, midX + padding, midY);
+                  overlayCtx.restore();
+              }
+          } else {
+              const getIdx = (lIdx: number, rIdx: number) => {
+                  if (focusSide === 'L') return lIdx;
+                  if (focusSide === 'R') return rIdx;
+                  return (displayLandmarks[lIdx]?.visibility || 0) > (displayLandmarks[rIdx]?.visibility || 0) ? lIdx : rIdx;
+              };
+
+              const kneeIdx = getIdx(25, 26);
+              const kneeVal = focusSide === 'L' && metric.lKneeAngle !== undefined ? metric.lKneeAngle : (focusSide === 'R' && metric.rKneeAngle !== undefined ? metric.rKneeAngle : metric.kneeAngle);
+              drawBadgeAtIdx(kneeIdx, `K: ${(kneeVal || 0).toFixed(0)}°`, '#facc15');
+              
+              const ankleIdx = getIdx(27, 28);
+              const ankleVal = focusSide === 'L' && metric.lAnkleAngle !== undefined ? metric.lAnkleAngle : (focusSide === 'R' && metric.rAnkleAngle !== undefined ? metric.rAnkleAngle : metric.ankleAngle);
+              drawBadgeAtIdx(ankleIdx, `A: ${(ankleVal || 0).toFixed(0)}°`, '#10b981');
+
+              const hipIdx = getIdx(23, 24);
+              const hipVal = focusSide === 'L' && metric.lHipAngle !== undefined ? metric.lHipAngle : (focusSide === 'R' && metric.rHipAngle !== undefined ? metric.rHipAngle : metric.hipAngle);
+              drawBadgeAtIdx(hipIdx, `H: ${(hipVal || 0).toFixed(0)}°`, '#60a5fa');
+              
+              if (displayLandmarks[hipIdx] && displayLandmarks[hipIdx - 12] && displayLandmarks[hipIdx].visibility > 0.3 && displayLandmarks[hipIdx - 12].visibility > 0.3) {
+                  const shoulderIdx = hipIdx - 12;
+                  const backAngle = metric.backAngle || 0;
+
+                  let cx = 0.5;
+                  let validCount = 0;
+                  [11, 12, 23, 24].forEach(i => {
+                      if (displayLandmarks[i] && displayLandmarks[i].visibility > 0.3) {
+                          cx += displayLandmarks[i].x;
+                          validCount++;
+                      }
+                  });
+                  if (validCount > 0) cx = (cx - 0.5) / validCount;
+
+                  const midLandmarkX = (displayLandmarks[shoulderIdx].x + displayLandmarks[hipIdx].x) / 2;
+                  const isLeftOfCenter = midLandmarkX < cx;
+
+                  const text = `B: ${backAngle.toFixed(0)}°`;
+                  const metrics = overlayCtx.measureText(text);
+                  const padding = 4;
+                  const bgW = metrics.width + padding * 2;
+                  const bgH = fontSize + padding * 2;
+                  
+                  const offsetX = isLeftOfCenter ? -(bgW + 15) : 15;
+                  const midX = midLandmarkX * w + offsetX;
+                  const midY = ((displayLandmarks[shoulderIdx].y + displayLandmarks[hipIdx].y) / 2) * h;
+
+                  overlayCtx.save();
+                  overlayCtx.fillStyle = 'rgba(0,0,0,0.8)';
+                  overlayCtx.beginPath();
+                  overlayCtx.roundRect(midX, midY - bgH / 2, bgW, bgH, 4);
+                  overlayCtx.fill();
+                  overlayCtx.fillStyle = '#a78bfa';
+                  overlayCtx.fillText(text, midX + padding, midY);
+                  overlayCtx.restore();
+              }
           }
       }
 
@@ -2469,7 +2573,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       }
       
       overlayCtx.restore();
-  }, []);
+  }, [focusSide]);
 
   const renderFrameUpdates = useCallback(() => {
       if (!videoRef.current || fullLiftHistory.current.length === 0) return;
@@ -2517,6 +2621,12 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const handleTimeUpdate = () => {
     if (videoRef.current && videoRef.current.paused) renderFrameUpdates();
   };
+
+  useEffect(() => {
+      if (analysisState === AnalysisState.COMPLETE && videoRef.current && videoRef.current.paused) {
+          renderFrameUpdates();
+      }
+  }, [focusSide, renderFrameUpdates, analysisState]);
 
   useEffect(() => {
     if (!videoRef.current || !canvasRef.current || !containerRef.current) return;

@@ -773,7 +773,8 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                     fullAngleMode 
                       ? [
                           { value: 'Back', type: 'line', id: 'backAngle', color: '#a78bfa' },
-                          { value: 'Hip', type: 'line', id: 'hipAngle', color: '#3b82f6' },
+                          { value: 'L Hip', type: 'line', id: 'lHipAngle', color: '#60a5fa' },
+                          { value: 'R Hip', type: 'line', id: 'rHipAngle', color: '#3b82f6' },
                           { value: 'L Knee', type: 'line', id: 'lKneeAngle', color: '#facc15' },
                           { value: 'R Knee', type: 'line', id: 'rKneeAngle', color: '#fb923c' },
                           { value: 'L Ankle', type: 'line', id: 'lAnkleAngle', color: '#10b981' },
@@ -792,7 +793,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  itemStyle={{ fontSize: '11px' }} 
                  cursor={{ stroke: '#facc15', strokeWidth: 1 }}
                  itemSorter={(item) => {
-                    const order = ['Back', 'Hip', 'Knee', 'Ankle', 'L Knee', 'R Knee', 'L Ankle', 'R Ankle'];
+                    const order = ['Back', 'Hip', 'Knee', 'Ankle', 'L Hip', 'R Hip', 'L Knee', 'R Knee', 'L Ankle', 'R Ankle'];
                     const idx = order.indexOf(String(item.name));
                     return idx === -1 ? 99 : idx;
                  }}
@@ -802,9 +803,10 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
               {currentPoint && (
                 <>
                   <ReferenceDot x={currentPoint.timeVal} y={currentPoint.backAngle || 0} r={3} fill="#a78bfa" stroke="none" />
-                  <ReferenceDot x={currentPoint.timeVal} y={currentPoint.hipAngle} r={3} fill="#3b82f6" stroke="none" />
                   {fullAngleMode ? (
                     <>
+                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.lHipAngle || 0} r={3} fill="#60a5fa" stroke="none" />
+                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.rHipAngle || 0} r={3} fill="#3b82f6" stroke="none" />
                       <ReferenceDot x={currentPoint.timeVal} y={currentPoint.lKneeAngle || 0} r={3} fill="#facc15" stroke="none" />
                       <ReferenceDot x={currentPoint.timeVal} y={currentPoint.rKneeAngle || 0} r={3} fill="#fb923c" stroke="none" />
                       <ReferenceDot x={currentPoint.timeVal} y={currentPoint.lAnkleAngle || 0} r={3} fill="#10b981" stroke="none" />
@@ -812,6 +814,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                     </>
                   ) : (
                     <>
+                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.hipAngle} r={3} fill="#3b82f6" stroke="none" />
                       <ReferenceDot x={currentPoint.timeVal} y={currentPoint.kneeAngle} r={3} fill="#facc15" stroke="none" />
                       <ReferenceDot x={currentPoint.timeVal} y={currentPoint.ankleAngle} r={3} fill="#10b981" stroke="none" />
                     </>
@@ -819,9 +822,10 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 </>
               )}
               <Line name="Back" type="monotone" dataKey="backAngle" stroke="#a78bfa" strokeWidth={2} dot={false} isAnimationActive={false} />
-              <Line name="Hip" type="monotone" dataKey="hipAngle" stroke="#3b82f6" strokeWidth={2} dot={false} isAnimationActive={false} />
               {fullAngleMode ? (
                 <>
+                  <Line name="L Hip" type="monotone" dataKey="lHipAngle" stroke="#60a5fa" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line name="R Hip" type="monotone" dataKey="rHipAngle" stroke="#3b82f6" strokeWidth={2} dot={false} isAnimationActive={false} strokeDasharray="5 5" />
                   <Line name="L Knee" type="monotone" dataKey="lKneeAngle" stroke="#facc15" strokeWidth={2} dot={false} isAnimationActive={false} />
                   <Line name="R Knee" type="monotone" dataKey="rKneeAngle" stroke="#fb923c" strokeWidth={2} dot={false} isAnimationActive={false} strokeDasharray="5 5" />
                   <Line name="L Ankle" type="monotone" dataKey="lAnkleAngle" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} />
@@ -829,6 +833,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 </>
               ) : (
                 <>
+                  <Line name="Hip" type="monotone" dataKey="hipAngle" stroke="#3b82f6" strokeWidth={2} dot={false} isAnimationActive={false} />
                   <Line name="Knee" type="monotone" dataKey="kneeAngle" stroke="#facc15" strokeWidth={2} dot={false} isAnimationActive={false} />
                   <Line name="Ankle" type="monotone" dataKey="ankleAngle" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} />
                 </>

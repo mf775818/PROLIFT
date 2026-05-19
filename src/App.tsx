@@ -47,15 +47,38 @@ const Resizer = ({ orientation, onResizeStart, isResizing }: { orientation: 'ver
 };
 
 // Helper component for stat box
-const StatBox = ({ id, label, value, unit, subColor = "text-zinc-600", valColor = "text-white" }: any) => (
+const StatBox = ({ id, label, valAvg, valL, valR, unit, subColor = "text-zinc-600", valColor = "text-white", hasSides, focusSide, onSideClick, precision = 0 }: any) => {
+    return (
     <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-700/50 flex flex-col justify-between hover:bg-zinc-800 transition-colors">
-        <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">{label}</span>
+        <div className="flex flex-col xl:flex-row justify-between items-start mb-2 gap-2 xl:gap-0">
+            <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">{label}</span>
+            {hasSides && (
+                 <div className="flex flex-wrap gap-1 bg-zinc-900/50 p-1 rounded-lg border border-zinc-700/50 w-full xl:w-auto mt-1 xl:mt-0">
+                     <button onClick={() => onSideClick('avg')} className={`flex-1 text-[10px] sm:text-xs px-2 py-1 sm:py-1.5 rounded-md flex items-center justify-center font-bold transition-all ${focusSide === 'avg' ? 'bg-blue-500 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'}`}>AVG</button>
+                     <button onClick={() => onSideClick('all')} className={`flex-1 text-[10px] sm:text-xs px-2 py-1 sm:py-1.5 rounded-md flex items-center justify-center font-bold transition-all ${focusSide === 'all' ? 'bg-purple-500 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'}`}>ALL</button>
+                     <button onClick={() => onSideClick('L')} className={`flex-1 text-[10px] sm:text-xs px-2 py-1 sm:py-1.5 rounded-md flex items-center justify-center font-bold transition-all ${focusSide === 'L' ? 'bg-yellow-500 text-black shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'}`}>L</button>
+                     <button onClick={() => onSideClick('R')} className={`flex-1 text-[10px] sm:text-xs px-2 py-1 sm:py-1.5 rounded-md flex items-center justify-center font-bold transition-all ${focusSide === 'R' ? 'bg-emerald-500 text-black shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'}`}>R</button>
+                 </div>
+            )}
+        </div>
         <div className="flex items-baseline gap-1 mt-1">
-            <span id={id} className={`text-xl font-mono font-bold ${valColor}`}>{value}</span>
+            {focusSide === 'all' && hasSides ? (
+                <div id={id} className={`flex gap-1 text-base font-mono font-bold leading-none items-baseline ${valColor}`}>
+                    <span className="text-yellow-500 text-sm">L</span><span>{valL !== undefined ? valL.toFixed(precision) : '--'}</span>
+                    <span className="text-emerald-500 text-sm ml-1">R</span><span>{valR !== undefined ? valR.toFixed(precision) : '--'}</span>
+                </div>
+            ) : (
+                <span id={id} className={`text-xl font-mono font-bold ${valColor}`}>
+                    {focusSide === 'L' && hasSides && valL !== undefined ? valL.toFixed(precision) : 
+                     focusSide === 'R' && hasSides && valR !== undefined ? valR.toFixed(precision) : 
+                     (valAvg !== undefined && valAvg !== null ? valAvg.toFixed(precision) : '--')}
+                </span>
+            )}
             <span className={`text-[10px] font-bold ${subColor}`}>{unit}</span>
         </div>
     </div>
-);
+    );
+};
 
 const App = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -92,6 +115,10 @@ const App = () => {
       chartHeightPct: 55 // 55% height by default on desktop
   });
   const [isResizing, setIsResizing] = useState(false);
+
+  const [focusSide, setFocusSide] = useState<'avg' | 'L' | 'R'>('avg');
+  const focusSideRef = useRef<'avg' | 'L' | 'R'>('avg');
+  useEffect(() => { focusSideRef.current = focusSide; }, [focusSide]);
 
   // --- ENGINE INITIALIZATION STATE ---
   const [initLog, setInitLog] = useState<{name: string, status: 'loading'|'ready'|'error'}[]>([
@@ -257,9 +284,22 @@ const App = () => {
         const elVel = document.getElementById('stat-velocity'); if (elVel) elVel.innerText = newMetric.velocity.toFixed(2);
         const elPwr = document.getElementById('stat-power'); if (elPwr) elPwr.innerText = newMetric.power.toFixed(0);
         const elHgt = document.getElementById('stat-height'); if (elHgt) elHgt.innerText = newMetric.height.toFixed(2);
-        const elKnee = document.getElementById('stat-knee'); if (elKnee) elKnee.innerText = newMetric.kneeAngle.toFixed(0);
-        const elHip = document.getElementById('stat-hip'); if (elHip) elHip.innerText = newMetric.hipAngle.toFixed(0);
-        const elAnkle = document.getElementById('stat-ankle'); if (elAnkle) elAnkle.innerText = newMetric.ankleAngle.toFixed(0);
+        
+        const side = focusSideRef.current;
+        const getSideValueHTML = (avg: number, l?: number, r?: number) => {
+            if (side === 'L' && l !== undefined) return l.toFixed(0);
+            if (side === 'R' && r !== undefined) return r.toFixed(0);
+            if (side === 'all' && l !== undefined && r !== undefined) return `<span class="text-yellow-500 text-sm">L</span><span>${l.toFixed(0)}</span><span class="text-emerald-500 text-sm ml-1">R</span><span>${r.toFixed(0)}</span>`;
+            return avg.toFixed(0);
+        };
+
+        const kneeHTML = getSideValueHTML(newMetric.kneeAngle, newMetric.lKneeAngle, newMetric.rKneeAngle);
+        const hipHTML = getSideValueHTML(newMetric.hipAngle, newMetric.lHipAngle, newMetric.rHipAngle);
+        const ankleHTML = getSideValueHTML(newMetric.ankleAngle || 0, newMetric.lAnkleAngle, newMetric.rAnkleAngle);
+
+        const elKnee = document.getElementById('stat-knee'); if (elKnee) elKnee.innerHTML = kneeHTML;
+        const elHip = document.getElementById('stat-hip'); if (elHip) elHip.innerHTML = hipHTML;
+        const elAnkle = document.getElementById('stat-ankle'); if (elAnkle) elAnkle.innerHTML = ankleHTML;
         const elBack = document.getElementById('stat-back'); if (elBack) elBack.innerText = (newMetric.backAngle || 0).toFixed(0);
         
         const mass = barbellMassRef.current;
@@ -538,6 +578,7 @@ const App = () => {
              userHeightMm={userHeightCm ? userHeightCm * 10 : null}
              seekRequest={seekRequest}
              onFileSelect={processFile}
+             focusSide={focusSide}
            />
         </main>
 
@@ -700,18 +741,19 @@ const App = () => {
                 <div className={`${activeTab === 'stats' ? 'block' : 'hidden lg:block'}`}>
                    <h4 className="text-[10px] text-zinc-600 font-bold mb-3 uppercase">Instantaneous</h4>
                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-                       <StatBox id="stat-velocity" label="Velocity" value={displayMetrics.velocity.toFixed(2)} unit="m/s" valColor="text-yellow-400" />
-                       <StatBox id="stat-power" label="Power" value={displayMetrics.power.toFixed(0)} unit="W" valColor="text-red-400"/>
-                       <StatBox id="stat-height" label="Height" value={displayMetrics.height.toFixed(2)} unit="m" valColor="text-blue-400"/>
-                       <StatBox id="stat-knee" label="Knee Ang" value={displayMetrics.kneeAngle.toFixed(0)} unit="°" />
-                       <StatBox id="stat-hip" label="Hip Ang" value={displayMetrics.hipAngle.toFixed(0)} unit="°" />
-                       <StatBox id="stat-ankle" label="Ankle Ang" value={displayMetrics.ankleAngle.toFixed(0)} unit="°" />
-                       <StatBox id="stat-back" label="Back Ang" value={(displayMetrics.backAngle || 0).toFixed(0)} unit="°" valColor="text-purple-400" />
+                       <StatBox id="stat-velocity" label="Velocity" valAvg={displayMetrics.velocity} unit="m/s" valColor="text-yellow-400" precision={2} />
+                       <StatBox id="stat-power" label="Power" valAvg={displayMetrics.power} unit="W" valColor="text-red-400" precision={0} />
+                       <StatBox id="stat-height" label="Height" valAvg={displayMetrics.height} unit="m" valColor="text-blue-400" precision={2} />
+                       <StatBox id="stat-knee" label="Knee Ang" valAvg={displayMetrics.kneeAngle} valL={displayMetrics.lKneeAngle} valR={displayMetrics.rKneeAngle} unit="°" hasSides={true} focusSide={focusSide} onSideClick={setFocusSide} precision={0} />
+                       <StatBox id="stat-hip" label="Hip Ang" valAvg={displayMetrics.hipAngle} valL={displayMetrics.lHipAngle} valR={displayMetrics.rHipAngle} unit="°" hasSides={true} focusSide={focusSide} onSideClick={setFocusSide} precision={0} />
+                       <StatBox id="stat-ankle" label="Ankle Ang" valAvg={displayMetrics.ankleAngle || 0} valL={displayMetrics.lAnkleAngle} valR={displayMetrics.rAnkleAngle} unit="°" hasSides={true} focusSide={focusSide} onSideClick={setFocusSide} precision={0} />
+                       <StatBox id="stat-back" label="Back Ang" valAvg={displayMetrics.backAngle || 0} unit="°" valColor="text-purple-400" precision={0} />
                        <StatBox 
                           id="stat-force"
                           label="Force (Est)" 
-                          value={allMetrics.length > 0 ? (cursorMetrics ? (barbellMass * (9.81 + (cursorMetrics.velocity - (allMetrics[allMetrics.indexOf(cursorMetrics)-1]?.velocity || 0))/0.03)).toFixed(0) : (barbellMass * 9.81).toFixed(0)) : "--"} 
+                          valAvg={allMetrics.length > 0 ? (cursorMetrics ? (barbellMass * (9.81 + (cursorMetrics.velocity - (allMetrics[allMetrics.indexOf(cursorMetrics)-1]?.velocity || 0))/0.03)) : (barbellMass * 9.81)) : null} 
                           unit="N" 
+                          precision={0}
                        />
                    </div>
                 </div>
