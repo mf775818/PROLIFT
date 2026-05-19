@@ -6,6 +6,7 @@ import { TrackingBuffer } from '../lib/hpc/TrackingBuffer';
 import { CalibrationEngineHPC } from '../lib/hpc/CalibrationEngineHPC';
 import { DepthCalibratorHPC } from '../lib/hpc/DepthCalibratorHPC';
 import { PhysicsEngineHPC } from '../lib/hpc/PhysicsEngineHPC';
+import { BiomechanicsProjectiveHPC } from '../lib/hpc/BiomechanicsProjectiveHPC';
 import { KalmanSmoother1D } from '../lib/hpc/KalmanSmoother';
 import { OnsetDetectorHPC } from '../lib/hpc/OnsetDetectorHPC';
 import { SpineKinematicsHPC } from '../lib/hpc/SpineKinematicsHPC';
@@ -1921,17 +1922,44 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const isDualAnchored = depthCalibrator.isHighPrecisionMode();
     console.log("Calibration Mode: ", isDualAnchored ? "Dual Anchored (Bi-Planar)" : "Single Anchored");
 
+    const bioEngine = new BiomechanicsProjectiveHPC();
+    const dltMatrixArray = (isDltConfirmed && dltPoints.length === 4) ? hMatrix : null;
+
     for (let i = 0; i < n; i++) {
         const frame = raw[i];
         
-        // Calculate raw angles for smoothing
-        const kneeAngleRaw = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
-        const hipAngleRaw = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
+        let kneeAngleRaw, hipAngleRaw, lKneeAngleRaw, rKneeAngleRaw, lHipAngleRaw, rHipAngleRaw;
 
-        const lKneeAngleRaw = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
-        const rKneeAngleRaw = calculateAngle(frame.landmarks[24], frame.landmarks[26], frame.landmarks[28]);
-        const lHipAngleRaw = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
-        const rHipAngleRaw = calculateAngle(frame.landmarks[12], frame.landmarks[24], frame.landmarks[26]);
+        if (dltMatrixArray) {
+            const hL = new Float64Array([frame.landmarks[23].x * canvasW, frame.landmarks[23].y * canvasH, 1]);
+            const kL = new Float64Array([frame.landmarks[25].x * canvasW, frame.landmarks[25].y * canvasH, 1]);
+            const aL = new Float64Array([frame.landmarks[27].x * canvasW, frame.landmarks[27].y * canvasH, 1]);
+            
+            const hR = new Float64Array([frame.landmarks[24].x * canvasW, frame.landmarks[24].y * canvasH, 1]);
+            const kR = new Float64Array([frame.landmarks[26].x * canvasW, frame.landmarks[26].y * canvasH, 1]);
+            const aR = new Float64Array([frame.landmarks[28].x * canvasW, frame.landmarks[28].y * canvasH, 1]);
+
+            const sL = new Float64Array([frame.landmarks[11].x * canvasW, frame.landmarks[11].y * canvasH, 1]);
+            const sR = new Float64Array([frame.landmarks[12].x * canvasW, frame.landmarks[12].y * canvasH, 1]);
+
+            lKneeAngleRaw = bioEngine.calculateTrueJointAngle(hL, kL, aL, dltMatrixArray);
+            rKneeAngleRaw = bioEngine.calculateTrueJointAngle(hR, kR, aR, dltMatrixArray);
+            
+            lHipAngleRaw = bioEngine.calculateTrueJointAngle(sL, hL, kL, dltMatrixArray);
+            rHipAngleRaw = bioEngine.calculateTrueJointAngle(sR, hR, kR, dltMatrixArray);
+
+            kneeAngleRaw = (frame.landmarks[23].visibility > frame.landmarks[24].visibility) ? lKneeAngleRaw : rKneeAngleRaw;
+            hipAngleRaw = (frame.landmarks[11].visibility > frame.landmarks[12].visibility) ? lHipAngleRaw : rHipAngleRaw;
+        } else {
+            // Calculate raw angles for smoothing
+            kneeAngleRaw = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
+            hipAngleRaw = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
+
+            lKneeAngleRaw = calculateAngle(frame.landmarks[23], frame.landmarks[25], frame.landmarks[27]);
+            rKneeAngleRaw = calculateAngle(frame.landmarks[24], frame.landmarks[26], frame.landmarks[28]);
+            lHipAngleRaw = calculateAngle(frame.landmarks[11], frame.landmarks[23], frame.landmarks[25]);
+            rHipAngleRaw = calculateAngle(frame.landmarks[12], frame.landmarks[24], frame.landmarks[26]);
+        }
         
         // --- 🐒C++++ 手術刀調整：DLT 背角同步校正 ---
         // 當 DLT 啟用時，應以此平面校正後的 X 軸作為水平基準進行同步計算
@@ -2186,7 +2214,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
               if (!displayLandmarks[idx] || displayLandmarks[idx].visibility < 0.3) return;
               
               // Calculate horizontal center of the body based on shoulders and hips
-              let cx = 0.5;
+              let cx = 0;
               let validCount = 0;
               [11, 12, 23, 24].forEach(i => {
                   if (displayLandmarks[i] && displayLandmarks[i].visibility > 0.3) {
@@ -2194,8 +2222,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                       validCount++;
                   }
               });
-              if (validCount > 0) cx = (cx - 0.5) / validCount;
-              
+              if (validCount > 0) cx = cx / validCount; else cx = 0.5;
+
               const isLeftOfCenter = displayLandmarks[idx].x < cx;
               
               const padding = 4;
@@ -2232,7 +2260,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                   const shoulderIdx = hipIdx - 12;
                   const backAngle = metric.backAngle || 0;
                   
-                  let cx = 0.5;
+                  let cx = 0;
                   let validCount = 0;
                   [11, 12, 23, 24].forEach(i => {
                       if (displayLandmarks[i] && displayLandmarks[i].visibility > 0.3) {
@@ -2240,7 +2268,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                           validCount++;
                       }
                   });
-                  if (validCount > 0) cx = (cx - 0.5) / validCount;
+                  if (validCount > 0) cx = cx / validCount; else cx = 0.5;
 
                   const midLandmarkX = (displayLandmarks[shoulderIdx].x + displayLandmarks[hipIdx].x) / 2;
                   const isLeftOfCenter = midLandmarkX < cx;
@@ -2287,7 +2315,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                   const shoulderIdx = hipIdx - 12;
                   const backAngle = metric.backAngle || 0;
 
-                  let cx = 0.5;
+                  let cx = 0;
                   let validCount = 0;
                   [11, 12, 23, 24].forEach(i => {
                       if (displayLandmarks[i] && displayLandmarks[i].visibility > 0.3) {
@@ -2295,7 +2323,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                           validCount++;
                       }
                   });
-                  if (validCount > 0) cx = (cx - 0.5) / validCount;
+                  if (validCount > 0) cx = cx / validCount; else cx = 0.5;
 
                   const midLandmarkX = (displayLandmarks[shoulderIdx].x + displayLandmarks[hipIdx].x) / 2;
                   const isLeftOfCenter = midLandmarkX < cx;

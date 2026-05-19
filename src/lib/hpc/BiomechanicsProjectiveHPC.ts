@@ -20,7 +20,60 @@ export class BiomechanicsProjectiveHPC {
     private readonly pH_L_trans = new Float64Array(3);
     private readonly pH_R_trans = new Float64Array(3);
 
+    // [新增] 角度計算專用的預分配快取
+    private readonly pJointA_trans = new Float64Array(3);
+    private readonly pJointB_trans = new Float64Array(3);
+    private readonly pJointC_trans = new Float64Array(3);
+
     private readonly perspectiveMath = new PerspectiveMath();
+
+    /**
+     * [新增] 算出真正無誤差的關節夾角 (例如 A=髖, B=膝, C=踝 求膝角)
+     * 結合 DLT 矩陣，在完美的二維正交平面中求角
+     */
+    public calculateTrueJointAngle(
+        jointA: Float64Array, 
+        jointB: Float64Array, 
+        jointC: Float64Array,
+        homographyMatrix: Float64Array | Float32Array
+    ): number {
+        // 1. 將三個關節點過 DLT 矩陣，投影到絕對正交的真實平面
+        this.perspectiveMath.multiplyMat3Vec3(this.pJointA_trans, homographyMatrix, jointA);
+        this.perspectiveMath.multiplyMat3Vec3(this.pJointB_trans, homographyMatrix, jointB);
+        this.perspectiveMath.multiplyMat3Vec3(this.pJointC_trans, homographyMatrix, jointC);
+
+        // 2. 齊次座標歸一化 (除以 w)
+        this.normalizeHomogeneous(this.pJointA_trans);
+        this.normalizeHomogeneous(this.pJointB_trans);
+        this.normalizeHomogeneous(this.pJointC_trans);
+
+        // 3. 計算向量 BA 與 BC
+        const ba_x = this.pJointA_trans[0] - this.pJointB_trans[0];
+        const ba_y = this.pJointA_trans[1] - this.pJointB_trans[1];
+        const bc_x = this.pJointC_trans[0] - this.pJointB_trans[0];
+        const bc_y = this.pJointC_trans[1] - this.pJointB_trans[1];
+
+        // 4. 利用 Atan2 與外積求高精度夾角
+        // 內積 (Dot Product)
+        const dot = ba_x * bc_x + ba_y * bc_y;
+        // 2D 外積 (Cross Product Z-component) 判斷旋轉方向
+        const det = ba_x * bc_y - ba_y * bc_x; 
+
+        // atan2(y, x) 確保回傳完整的 [-180, 180] 角度，比 acos 穩定且無奇異點
+        let angle = Math.atan2(Math.abs(det), dot) * (180.0 / Math.PI);
+        return angle; 
+    }
+
+    // 輔助函式：原地歸一化
+    private normalizeHomogeneous(vec: Float64Array): void {
+        const w = vec[2];
+        if (Math.abs(w) > 1e-10) {
+            const invW = 1.0 / w;
+            vec[0] *= invW;
+            vec[1] *= invW;
+            vec[2] = 1.0;
+        }
+    }
 
     public crossProduct(out: Float64Array, a: Float64Array, b: Float64Array): void {
         out[0] = a[1] * b[2] - a[2] * b[1];

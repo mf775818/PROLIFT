@@ -8,6 +8,9 @@ export class CalibrationEngineHPC {
     0, 0, 1
   ]);
 
+  // 用於高斯消去的預分配記憶體 (避免 GC)
+  private matrixA: Float64Array = new Float64Array(8 * 9); 
+
   /**
    * 更新透視矩陣 (可由 OpenCV findHomography 算出演算結果傳入)
    */
@@ -15,6 +18,81 @@ export class CalibrationEngineHPC {
     for (let i = 0; i < 9; i++) {
       this.homographyMatrix[i] = matrix[i];
     }
+  }
+
+  public getHomography(): Float32Array {
+      return this.homographyMatrix;
+  }
+
+  /**
+   * [新增] 核心 DLT 求解器 (Direct Linear Transformation)
+   * 傳入畫面上的 4 點 (畸變四邊形) 與 現實對應的 4 點 (完美矩形)
+   * srcPts: [u0, v0, u1, v1, u2, v2, u3, v3] (前上, 後上, 後下, 前下 的像素座標)
+   * dstPts: [x0, y0, x1, y1, x2, y2, x3, y3] (對應的真實物理座標，可自訂比例)
+   */
+  public computeHomographyFrom4Points(srcPts: Float32Array | number[], dstPts: Float32Array | number[]): boolean {
+    this.matrixA.fill(0);
+    const A = this.matrixA;
+
+    // 建立 8x9 矩陣
+    for (let i = 0; i < 4; i++) {
+      const u = srcPts[i * 2], v = srcPts[i * 2 + 1];
+      const x = dstPts[i * 2], y = dstPts[i * 2 + 1];
+      
+      const row1 = i * 18; // 2 * i * 9
+      A[row1 + 0] = -u; A[row1 + 1] = -v; A[row1 + 2] = -1;
+      A[row1 + 3] = 0;  A[row1 + 4] = 0;  A[row1 + 5] = 0;
+      A[row1 + 6] = u * x; A[row1 + 7] = v * x; A[row1 + 8] = x;
+
+      const row2 = row1 + 9;
+      A[row2 + 0] = 0;  A[row2 + 1] = 0;  A[row2 + 2] = 0;
+      A[row2 + 3] = -u; A[row2 + 4] = -v; A[row2 + 5] = -1;
+      A[row2 + 6] = u * y; A[row2 + 7] = v * y; A[row2 + 8] = y;
+    }
+
+    // 簡易高斯消去法解 Ah = 0 (固定 H[8] = 1)
+    for (let i = 0; i < 8; i++) {
+      // 找最大主元 (Pivoting)
+      let maxRow = i;
+      let maxVal = Math.abs(A[i * 9 + i]);
+      for (let j = i + 1; j < 8; j++) {
+        let val = Math.abs(A[j * 9 + i]);
+        if (val > maxVal) { maxVal = val; maxRow = j; }
+      }
+      if (maxVal < 1e-10) return false; // 矩陣奇異 (點重合或共線)
+
+      // 交換行
+      if (maxRow !== i) {
+        for (let k = i; k < 9; k++) {
+          let tmp = A[i * 9 + k];
+          A[i * 9 + k] = A[maxRow * 9 + k];
+          A[maxRow * 9 + k] = tmp;
+        }
+      }
+
+      // 消去
+      for (let j = i + 1; j < 8; j++) {
+        let factor = A[j * 9 + i] / A[i * 9 + i];
+        for (let k = i; k < 9; k++) {
+          A[j * 9 + k] -= factor * A[i * 9 + k];
+        }
+      }
+    }
+
+    // 回代求解 H
+    const H = new Float64Array(9);
+    H[8] = 1.0;
+    for (let i = 7; i >= 0; i--) {
+      let sum = 0;
+      for (let j = i + 1; j < 9; j++) {
+        sum += A[i * 9 + j] * H[j];
+      }
+      H[i] = -sum / A[i * 9 + i];
+    }
+
+    // 更新到實例的 Homography Matrix
+    for (let i = 0; i < 9; i++) this.homographyMatrix[i] = H[i];
+    return true;
   }
 
   /**
