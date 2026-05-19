@@ -8,6 +8,7 @@ import { DepthCalibratorHPC } from '../lib/hpc/DepthCalibratorHPC';
 import { PhysicsEngineHPC } from '../lib/hpc/PhysicsEngineHPC';
 import { BiomechanicsProjectiveHPC } from '../lib/hpc/BiomechanicsProjectiveHPC';
 import { KalmanSmoother1D } from '../lib/hpc/KalmanSmoother';
+import { ProjectiveMathHPC } from '../lib/hpc/ProjectiveMathHPC';
 import { OnsetDetectorHPC } from '../lib/hpc/OnsetDetectorHPC';
 import { SpineKinematicsHPC } from '../lib/hpc/SpineKinematicsHPC';
 import { AnkleKinematicsHPC } from '../lib/hpc/AnkleKinematicsHPC';
@@ -1708,7 +1709,57 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
              if (currentTime > 0 && cvTracker.isInitialized) {
                  try {
                     const res = cvTracker.track(ctx);
-                    if (res) trackedCenter = { x: (res.x + res.width / 2) / procW, y: (res.y + res.height / 2) / procH };
+                    if (res) {
+                        trackedCenter = { x: (res.x + res.width / 2) / procW, y: (res.y + res.height / 2) / procH };
+                        
+                        // --- 🐒C++++: Projective Geometry & Subpixel Refinement ---
+                        const cv = g_cv || (window as any).cv;
+                        if (cv && cv.Mat) {
+                            const src = cv.imread(analysisCanvas);
+                            const gray = new cv.Mat();
+                            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+                            let rx = Math.floor(res.x);
+                            let ry = Math.floor(res.y);
+                            let rw = Math.floor(res.width);
+                            let rh = Math.floor(res.height);
+
+                            if (rw > 10 && rh > 10) {
+                                // Add small padding for edge detection
+                                const padding = Math.max(rw, rh) * 0.2;
+                                rx = Math.max(0, Math.floor(rx - padding));
+                                ry = Math.max(0, Math.floor(ry - padding));
+                                rw = Math.min(procW - rx, Math.floor(rw + padding * 2));
+                                rh = Math.min(procH - ry, Math.floor(rh + padding * 2));
+
+                                const roiRect = new cv.Rect(rx, ry, rw, rh);
+                                const roiMat = gray.roi(roiRect);
+                                
+                                const subpixelPoints = ellipseFitterRef.current.extractSubpixelEdges(cv, roiMat, roiRect);
+                                const fitResult = ellipseFitterRef.current.fitEllipseConicMatrix(cv, subpixelPoints);
+                                
+                                if (fitResult && fitResult.qMatrix) {
+                                    const H = hMatrixRef.current;
+                                    // vanishing line is the 3rd row of Homography Matrix representing the line at infinity
+                                    const vanishingLine = new Float64Array([H[6], H[7], H[8]]);
+                                    
+                                    const pMath = new ProjectiveMathHPC();
+                                    const outCenter = new Float64Array(3);
+                                    
+                                    const successP = pMath.computeTruePhysicalCenter(outCenter, fitResult.qMatrix, vanishingLine);
+                                    if (successP) {
+                                        trackedCenter = { 
+                                           x: outCenter[0] / procW, 
+                                           y: outCenter[1] / procH 
+                                        };
+                                    }
+                                }
+                                roiMat.delete();
+                            }
+                            src.delete();
+                            gray.delete();
+                        }
+                    }
                  } catch (cvTrackErr) {
                     console.warn("OpenCV Tracking error:", cvTrackErr);
                  }
