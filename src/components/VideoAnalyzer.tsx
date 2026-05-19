@@ -547,8 +547,7 @@ class OpenCVTracker {
             status = new cv.Mat();
             err = new cv.Mat();
             
-            // --- 🐒C++++ INDUSTRIAL OPTIMIZATION: Unified Optical Flow ---
-            const winSize = isMobile ? new cv.Size(31, 31) : new cv.Size(41, 41); 
+            const winSize = isMobile ? new cv.Size(51, 51) : new cv.Size(41, 41); 
             const maxLevel = isMobile ? 6 : 4;
             
             const termCrit = new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 20, 0.01);
