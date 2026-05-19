@@ -839,55 +839,6 @@ const App = () => {
                                 <div className={`h-full ${efficiencyScore > 85 ? 'bg-emerald-500' : 'bg-yellow-500'}`} style={{ width: `${efficiencyScore}%` }}></div>
                             </div>
                         </div>
-                        {/* Table inserted here */}
-                        <div className="bg-zinc-800/30 rounded-xl border border-zinc-800 p-4 mt-6">
-                            <h4 className="text-[10px] text-zinc-500 font-bold mb-4 uppercase tracking-[0.2em] flex items-center gap-2">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-yellow-500"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                                Engine Technical Analysis (光流法分析)
-                            </h4>
-                            <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/50">
-                                <table className="w-full text-[9px] sm:text-[10px] text-left border-collapse">
-                                    <thead>
-                                        <tr className="bg-zinc-900 border-b border-zinc-800">
-                                            <th className="p-2.5 font-bold text-zinc-400 border-r border-zinc-800">Dimension</th>
-                                            <th className="p-2.5 font-bold text-blue-400 border-r border-zinc-800 text-center">Desktop</th>
-                                            <th className="p-2.5 font-bold text-yellow-500 text-center">Mobile</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <tr className="border-b border-zinc-800/50">
-                                            <td className="p-2.5 font-medium text-zinc-400 border-r border-zinc-800 text-[10px]">Search Window</td>
-                                            <td className="p-2.5 text-center text-zinc-300 border-r border-zinc-800">41x41</td>
-                                            <td className="p-2.5 text-center text-zinc-300 font-bold">31x31 (ARM)</td>
-                                        </tr>
-                                        <tr className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors text-[10px]">
-                                            <td className="p-2.5 font-medium text-zinc-400 border-r border-zinc-800">Proc. Latency</td>
-                                            <td className="p-2.5 text-center text-emerald-500 border-r border-zinc-800">{'< 0.8ms'}</td>
-                                            <td className="p-2.5 text-center text-yellow-500">3.5 - 9.0ms</td>
-                                        </tr>
-                                        <tr className="border-b border-zinc-800/50 text-[10px]">
-                                            <td className="p-2.5 font-medium text-zinc-400 border-r border-zinc-800">SIMD Optim.</td>
-                                            <td className="p-2.5 text-center text-zinc-300 border-r border-zinc-800">AVX2 / SSE4</td>
-                                            <td className="p-2.5 text-center text-zinc-300">ARM NEON</td>
-                                        </tr>
-                                        <tr className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors text-[10px]">
-                                            <td className="p-2.5 font-medium text-zinc-400 border-r border-zinc-800">Max Levels</td>
-                                            <td className="p-2.5 text-center text-zinc-300 border-r border-zinc-800">6 (Ultra)</td>
-                                            <td className="p-2.5 text-center text-zinc-300">6 (Deep)</td>
-                                        </tr>
-                                        <tr className="hover:bg-zinc-800/30 transition-colors text-[10px]">
-                                            <td className="p-2.5 font-medium text-zinc-400 border-r border-zinc-800">Stability</td>
-                                            <td className="p-2.5 text-center text-blue-400 border-r border-zinc-800">Precise Track</td>
-                                            <td className="p-2.5 text-center text-yellow-400 font-bold">2.0x ROI Exp.</td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <p className="mt-3 text-[8px] text-zinc-600 italic font-medium leading-relaxed">
-                                * Mobile version uses localized ROI pooling for higher cache efficiency on ARM SOCs.
-                                <br/>* Optical flow window (31x31) and 6-level pyramid prevent track loss during rapid barbell acceleration.
-                            </p>
-                        </div>
                     </div>
                 )}
             </div>

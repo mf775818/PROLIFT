@@ -520,10 +520,11 @@ class OpenCVTracker {
             cv.cvtColor(src, fullNextGray, cv.COLOR_RGBA2GRAY, 0); 
             this.clahe.apply(fullNextGray, fullNextGray);
             
-            // --- INDUSTRIAL OPTIMIZATION: ROI Cropping (2.0x Expansion) ---
-            // 將搜尋範圍由固定 Padding 改為根據 ROI 大小的 2.0 倍動態擴張，減少大幅度動作導致的掉幀
-            const paddingX = this.currentROI.width * 0.5; // 雙側各擴展 50%，總搜尋寬度為 2.0x
-            const paddingY = this.currentROI.height * 0.5;
+            // --- INDUSTRIAL OPTIMIZATION: Adaptive ROI Cropping ---
+            const isMobile = window.matchMedia('(pointer: coarse)').matches;
+            const paddingScale = isMobile ? 0.5 : 0.25; // Mobile 2.0x (1 + 0.5*2), Desktop 1.5x (1 + 0.25*2)
+            const paddingX = this.currentROI.width * paddingScale;
+            const paddingY = this.currentROI.height * paddingScale;
             
             const rx = Math.max(0, this.currentROI.x - paddingX);
             const ry = Math.max(0, this.currentROI.y - paddingY);
@@ -547,10 +548,8 @@ class OpenCVTracker {
             err = new cv.Mat();
             
             // --- 🐒C++++ INDUSTRIAL OPTIMIZATION: Unified Optical Flow ---
-            // 動態調整搜索視窗：移動端下修至 31x31 以維持流暢度，電腦端維持 41x41。
-            const isMobile = window.matchMedia('(pointer: coarse)').matches;
             const winSize = isMobile ? new cv.Size(31, 31) : new cv.Size(41, 41); 
-            const maxLevel = 6; // 增加金字塔層級：從 4 提升至 6，擴大跨幀捕捉範圍
+            const maxLevel = isMobile ? 6 : 4;
             
             const termCrit = new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 20, 0.01);
 
