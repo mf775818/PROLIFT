@@ -1958,7 +1958,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             kneeAngleRaw,
             hipAngleRaw,
             ankleAngleRaw,
-            backAngleRaw
+            backAngleRaw,
+            lKneeAngleRaw,
+            rKneeAngleRaw,
+            lHipAngleRaw,
+            rHipAngleRaw,
+            lAnkleAngleRaw,
+            rAnkleAngleRaw
         );
     }
     
@@ -1984,13 +1990,23 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const outHip = new Float32Array(n);
     const outAnkle = new Float32Array(n);
     const outBack = new Float32Array(n);
+    const outLKnee = new Float32Array(n);
+    const outRKnee = new Float32Array(n);
+    const outLHip = new Float32Array(n);
+    const outRHip = new Float32Array(n);
+    const outLAnkle = new Float32Array(n);
+    const outRAnkle = new Float32Array(n);
     const physicsEngine = new PhysicsEngineHPC(); // Create temporary for full pass
     
     // 批次物理動力計算 (O(n) Zero-Allocation)
     physicsEngine.computeKinetics(trackingBuffer, outKinetics, barbellMassRef.current);
     
     // --- NEW: Industrial Grade Angle Smoothing (OneEuro + Sigmoid) ---
-    physicsEngine.smoothAngles(trackingBuffer, outKnee, outHip, outAnkle, outBack);
+    physicsEngine.smoothAngles(
+        trackingBuffer, 
+        outKnee, outHip, outAnkle, outBack,
+        outLKnee, outRKnee, outLHip, outRHip, outLAnkle, outRAnkle
+    );
 
     const metrics: LiftMetrics[] = []; let maxVel = 0;
 
@@ -2015,18 +2031,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         const lm = frame.landmarks;
         const hasLM = lm && lm.length >= 29;
 
-        // Recompute angles for Left/Right specifically. Raw output is fine for this detailed view.
-        let lKneeA = 0, rKneeA = 0, lHipA = 0, rHipA = 0, lAnkleA = 0, rAnkleA = 0;
-        if (hasLM) {
-            lKneeA = calculateAngle(lm[23], lm[25], lm[27]);
-            rKneeA = calculateAngle(lm[24], lm[26], lm[28]);
-            lHipA = calculateAngle(lm[11], lm[23], lm[25]);
-            rHipA = calculateAngle(lm[12], lm[24], lm[26]);
-            // Just reuse ankleEngine without DLT for raw
-            lAnkleA = ankleEngine.calculateSpecificAnkleAngle(lm, true, null);
-            rAnkleA = ankleEngine.calculateSpecificAnkleAngle(lm, false, null);
-        }
-
         metrics.push({ 
             time: frame.time.toFixed(3), 
             velocity: Math.max(0, velocity), 
@@ -2040,12 +2044,12 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             hipAngle: outHip[i],
             ankleAngle: outAnkle[i],
             backAngle: outBack[i],
-            lKneeAngle: lKneeA,
-            rKneeAngle: rKneeA,
-            lAnkleAngle: lAnkleA,
-            rAnkleAngle: rAnkleA,
-            lHipAngle: lHipA,
-            rHipAngle: rHipA,
+            lKneeAngle: outLKnee[i],
+            rKneeAngle: outRKnee[i],
+            lAnkleAngle: outLAnkle[i],
+            rAnkleAngle: outRAnkle[i],
+            lHipAngle: outLHip[i],
+            rHipAngle: outRHip[i],
             lHipX: hasLM ? lm[23]?.x : 0,
             lHipY: hasLM ? lm[23]?.y : 0,
             rHipX: hasLM ? lm[24]?.x : 0,

@@ -192,10 +192,10 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
         'Acceleration (m/s^2)',
         'Height (m)',
         'Bar Path Deviation (cm)',
-        'Knee Angle (deg)',
-        'Hip Angle (deg)',
-        'Ankle Angle (deg)',
         'Back Angle (deg)',
+        'Hip Angle (deg)',
+        'Knee Angle (deg)',
+        'Ankle Angle (deg)',
         'L Knee Angle (deg)',
         'R Knee Angle (deg)',
         'L Ankle Angle (deg)',
@@ -227,10 +227,10 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
         row.acceleration.toFixed(2),
         row.height.toFixed(3),
         row.xDev.toFixed(2), // The crucial Zero-Line adjusted metric
-        row.kneeAngle.toFixed(1),
-        row.hipAngle.toFixed(1),
-        (row.ankleAngle || 0).toFixed(1),
         (row.backAngle || 0).toFixed(1),
+        row.hipAngle.toFixed(1),
+        row.kneeAngle.toFixed(1),
+        (row.ankleAngle || 0).toFixed(1),
         (row.lKneeAngle || 0).toFixed(1),
         (row.rKneeAngle || 0).toFixed(1),
         (row.lAnkleAngle || 0).toFixed(1),
@@ -570,7 +570,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
             {mode === 'kinetics' && 'Force & Acceleration'}
             {mode === 'trajectory' && 'Bar Path Heatmap'}
             {mode === 'power' && 'Power Output'}
-            {mode === 'angles' && 'Joint Angles (Hip/Knee/Ankle)'}
+            {mode === 'angles' && 'Joint AnglesD'}
          </h3>
          <div 
            className="flex bg-zinc-900 rounded p-1 border border-zinc-700 gap-1 z-10 items-center overflow-x-auto max-w-full [&::-webkit-scrollbar]:hidden" 
@@ -764,16 +764,44 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 ticks={fullAngleMode ? [0, 45, 90, 135, 180] : undefined} 
                 tickFormatter={(val) => val.toFixed(0)} 
               />
-              <Legend verticalAlign="top" height={36} iconSize={8} wrapperStyle={{ fontSize: '10px' }} />
+              <Legend 
+                 verticalAlign="top" 
+                 height={36} 
+                 iconSize={8} 
+                 wrapperStyle={{ fontSize: '10px' }} 
+                 payload={
+                    fullAngleMode 
+                      ? [
+                          { value: 'Back', type: 'line', id: 'backAngle', color: '#a78bfa' },
+                          { value: 'Hip', type: 'line', id: 'hipAngle', color: '#3b82f6' },
+                          { value: 'L Knee', type: 'line', id: 'lKneeAngle', color: '#facc15' },
+                          { value: 'R Knee', type: 'line', id: 'rKneeAngle', color: '#fb923c' },
+                          { value: 'L Ankle', type: 'line', id: 'lAnkleAngle', color: '#10b981' },
+                          { value: 'R Ankle', type: 'line', id: 'rAnkleAngle', color: '#2dd4bf' }
+                        ]
+                      : [
+                          { value: 'Back', type: 'line', id: 'backAngle', color: '#a78bfa' },
+                          { value: 'Hip', type: 'line', id: 'hipAngle', color: '#3b82f6' },
+                          { value: 'Knee', type: 'line', id: 'kneeAngle', color: '#facc15' },
+                          { value: 'Ankle', type: 'line', id: 'ankleAngle', color: '#10b981' }
+                        ]
+                 }
+              />
               <Tooltip 
                  contentStyle={{ backgroundColor: 'rgba(24, 24, 27, 0.9)', border: '1px solid #3f3f46' }} 
                  itemStyle={{ fontSize: '11px' }} 
                  cursor={{ stroke: '#facc15', strokeWidth: 1 }}
+                 itemSorter={(item) => {
+                    const order = ['Back', 'Hip', 'Knee', 'Ankle', 'L Knee', 'R Knee', 'L Ankle', 'R Ankle'];
+                    const idx = order.indexOf(String(item.name));
+                    return idx === -1 ? 99 : idx;
+                 }}
               />
               <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
               <ReferenceLine x={currentTime - startTimeVal} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                 <>
+                  <ReferenceDot x={currentPoint.timeVal} y={currentPoint.backAngle || 0} r={3} fill="#a78bfa" stroke="none" />
                   <ReferenceDot x={currentPoint.timeVal} y={currentPoint.hipAngle} r={3} fill="#3b82f6" stroke="none" />
                   {fullAngleMode ? (
                     <>
@@ -788,9 +816,9 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                       <ReferenceDot x={currentPoint.timeVal} y={currentPoint.ankleAngle} r={3} fill="#10b981" stroke="none" />
                     </>
                   )}
-                  <ReferenceDot x={currentPoint.timeVal} y={currentPoint.backAngle || 0} r={3} fill="#a78bfa" stroke="none" />
                 </>
               )}
+              <Line name="Back" type="monotone" dataKey="backAngle" stroke="#a78bfa" strokeWidth={2} dot={false} isAnimationActive={false} />
               <Line name="Hip" type="monotone" dataKey="hipAngle" stroke="#3b82f6" strokeWidth={2} dot={false} isAnimationActive={false} />
               {fullAngleMode ? (
                 <>
@@ -805,7 +833,6 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                   <Line name="Ankle" type="monotone" dataKey="ankleAngle" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} />
                 </>
               )}
-              <Line name="Back" type="monotone" dataKey="backAngle" stroke="#a78bfa" strokeWidth={2} dot={false} isAnimationActive={false} />
             </LineChart>
           ) : mode === 'trajectory' ? (
             <ScatterChart 

@@ -147,9 +147,19 @@ export class PhysicsEngineHPC {
     outKnee: Float32Array,
     outHip: Float32Array,
     outAnkle: Float32Array,
-    outBack: Float32Array
+    outBack: Float32Array,
+    outLKnee: Float32Array,
+    outRKnee: Float32Array,
+    outLHip: Float32Array,
+    outRHip: Float32Array,
+    outLAnkle: Float32Array,
+    outRAnkle: Float32Array
   ): void {
-    const { kneeAngle, hipAngle, ankleAngle, backAngle, t, head: len } = inputBuffer;
+    const { 
+      kneeAngle, hipAngle, ankleAngle, backAngle, 
+      lKneeAngle, rKneeAngle, lHipAngle, rHipAngle, lAnkleAngle, rAnkleAngle,
+      t, head: len 
+    } = inputBuffer;
     if (len < 5) return;
 
     let totalTime = t[len - 1] - t[0];
@@ -158,11 +168,20 @@ export class PhysicsEngineHPC {
     // 關節角度變化較為連續，使用 3.5Hz 的 cutoff 能提供極致滑順的視角感受，不會丟失屈伸的核心範圍
     const cutoffFreq = 3.5;
 
-    const arrays = [kneeAngle, hipAngle, ankleAngle, backAngle];
-    const outputs = [outKnee, outHip, outAnkle, outBack];
-    const keys = ['knee', 'hip', 'ankle', 'back'];
+    const arrays = [
+      kneeAngle, hipAngle, ankleAngle, backAngle,
+      lKneeAngle, rKneeAngle, lHipAngle, rHipAngle, lAnkleAngle, rAnkleAngle
+    ];
+    const outputs = [
+      outKnee, outHip, outAnkle, outBack,
+      outLKnee, outRKnee, outLHip, outRHip, outLAnkle, outRAnkle
+    ];
+    const keys = [
+      'knee', 'hip', 'ankle', 'back',
+      'lknee', 'rknee', 'lhip', 'rhip', 'lankle', 'rankle'
+    ];
 
-    for (let axis = 0; axis < 4; axis++) {
+    for (let axis = 0; axis < arrays.length; axis++) {
       const rawBuf = arrays[axis];
       const rawData = this.getBuffer(`raw_${keys[axis]}`, len);
       for(let i = 0; i < len; i++) rawData[i] = rawBuf[i];
