@@ -36,7 +36,10 @@ export class DepthCalibratorHPC {
 
             // 交叉分析：計算 Z 軸深度差 (假設相似三角形透視原理)
             // 比例尺越小，代表物體離相機越近。藉此可推斷槓鈴與人體的相對深度。
-            this.calibrationState[2] = (bodyScale - plateScale) * 1000; // 簡易深度偏差指標 (供後續矩陣微調用)
+            // 正確的幾何關係：比例尺 S = mm/pixel，而透視距離 Z ∝ 1/S，因此深度差應基於 1/S 的差值。
+            const invBodyScale = 1.0 / bodyScale;
+            const invPlateScale = 1.0 / plateScale;
+            this.calibrationState[2] = (invBodyScale - invPlateScale) * 1000; // 簡易深度偏差指標 (供後續矩陣微調用)
 
         } else {
             // ===== 單錨定模式 (Single Anchoring) =====

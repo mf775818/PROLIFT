@@ -1,6 +1,84 @@
 import { TrackingBuffer } from './TrackingBuffer';
 import { PerspectiveMath } from './PerspectiveMath';
 
+class GeometryValidator {
+    /**
+     * 驗證 4 個點是否構成合法的「凸四邊形」 (Convex Quadrilateral)
+     * 利用 2D 向量外積的符號一致性來判定
+     */
+    public static isConvexQuad(pts: Float32Array | number[]): boolean {
+        let positiveCount = 0;
+        let negativeCount = 0;
+        
+        for (let i = 0; i < 4; i++) {
+            const p0x = pts[(i * 2) % 8], p0y = pts[(i * 2 + 1) % 8];
+            const p1x = pts[((i + 1) * 2) % 8], p1y = pts[((i + 1) * 2 + 1) % 8];
+            const p2x = pts[((i + 2) * 2) % 8], p2y = pts[((i + 2) * 2 + 1) % 8];
+            
+            const dx1 = p1x - p0x, dy1 = p1y - p0y;
+            const dx2 = p2x - p1x, dy2 = p2y - p1y;
+            
+            // 向量外積 (Cross Product)
+            const crossProduct = dx1 * dy2 - dy1 * dx2;
+            
+            if (crossProduct > 0) positiveCount++;
+            else if (crossProduct < 0) negativeCount++;
+            
+            // 如果同時有正有負，代表凹多邊形或自交，必然校正失敗
+            if (positiveCount > 0 && negativeCount > 0) return false;
+        }
+        
+        // 面積防護 (Shoelace Formula) - 避免點過於密集或共線
+        const area = GeometryValidator.calculateArea(pts);
+        if (area < 10.0) return false; // 面積過小 (如小於10平方像素) 視為退化
+
+        return true;
+    }
+
+    private static calculateArea(pts: Float32Array | number[]): number {
+        let area = 0;
+        for (let i = 0; i < 4; i++) {
+            let j = (i + 1) % 4;
+            area += pts[i * 2] * pts[j * 2 + 1] - pts[j * 2] * pts[i * 2 + 1];
+        }
+        return Math.abs(area / 2.0);
+    }
+}
+
+class CalibrationValidator {
+    /**
+     * 計算轉換誤差 (Forward Projection Error in Physical Space)
+     * @param H 單應性矩陣 (Pixel -> Physical)
+     * @param srcPts 像素點 (u, v)
+     * @param dstPts 物理點 (x, y)
+     * @returns RMSE 數值 (物理單位，如 mm)
+     */
+    public static computeForwardProjectionError(H: Float64Array, srcPts: Float32Array | number[], dstPts: Float32Array | number[]): number {
+        let sumSquaredError = 0;
+        
+        for (let i = 0; i < 4; i++) {
+            const u = srcPts[i * 2];
+            const v = srcPts[i * 2 + 1];
+            
+            const expectedX = dstPts[i * 2];
+            const expectedY = dstPts[i * 2 + 1];
+            
+            const w = H[6] * u + H[7] * v + H[8];
+            if (Math.abs(w) < 1e-10) return Infinity; 
+            
+            const invW = 1.0 / w;
+            const predX = (H[0] * u + H[1] * v + H[2]) * invW;
+            const predY = (H[3] * u + H[4] * v + H[5]) * invW;
+            
+            const dx = predX - expectedX;
+            const dy = predY - expectedY;
+            sumSquaredError += dx * dx + dy * dy;
+        }
+        
+        return Math.sqrt(sumSquaredError / 4.0); 
+    }
+}
+
 export class CalibrationEngineHPC {
   // 3x3 單應性矩陣 (Homography Matrix) 以一維陣列儲存以利 CPU 快取
   private readonly homographyMatrix = new Float64Array(9); 
@@ -8,6 +86,7 @@ export class CalibrationEngineHPC {
   
   private readonly matrixA = new Float64Array(8 * 9);
   private readonly tempH = new Float64Array(9);
+  private readonly candidateMatrix = new Float64Array(9);
   
   // Hartley 正規化所需參數
   private readonly srcNorm = new Float64Array(8);
@@ -188,17 +267,46 @@ export class CalibrationEngineHPC {
     this.solveSVD_Jacobi();
 
     // 4. 去正規化 Denormalization: H_final = T_dst_inv * H * T_src
-    this.perspectiveMath.multiplyMat3Mat3(this.homographyMatrix, this.T_dst_inv, this.tempH);
-    this.perspectiveMath.multiplyMat3Mat3(this.homographyMatrix, this.homographyMatrix, this.T_src);
+    this.perspectiveMath.multiplyMat3Mat3(this.candidateMatrix, this.T_dst_inv, this.tempH);
+    this.perspectiveMath.multiplyMat3Mat3(this.candidateMatrix, this.candidateMatrix, this.T_src);
 
     // 確保 H[8] 不為 0 後縮放
-    const w = this.homographyMatrix[8];
+    const w = this.candidateMatrix[8];
     if (Math.abs(w) > 1e-10) {
         const invW = 1.0 / w;
-        for (let i = 0; i < 9; i++) this.homographyMatrix[i] *= invW;
+        for (let i = 0; i < 9; i++) this.candidateMatrix[i] *= invW;
     }
 
     return true;
+  }
+
+  public computeRobustHomography(srcPts: Float32Array | number[], dstPts: Float32Array | number[]): boolean {
+      // 1. 幾何合法性攔截
+      if (!GeometryValidator.isConvexQuad(srcPts)) {
+          console.warn("Calibration failed: Degenerated or Concave input points.");
+          return false; 
+      }
+
+      // 2. 執行 DLT (內部結果將存在 this.candidateMatrix)
+      const success = this.computeHomographyFrom4Points(srcPts, dstPts);
+      if (!success) return false;
+
+      // 3. 驗證校正品質 (Forward Projection Error)
+      const rmse = CalibrationValidator.computeForwardProjectionError(this.candidateMatrix, srcPts, dstPts);
+      
+      // 工業標準：4點完美映射下，RMSE 應極低。考量物理空間數值誤差 (例如 2000mm 的場景)，設置 10.0 mm 的容忍度
+      const MAX_FORWARD_ERROR_MM = 10.0; 
+      
+      if (rmse > MAX_FORWARD_ERROR_MM || !isFinite(rmse)) {
+          console.warn(`Calibration rejected. RMSE (${rmse.toFixed(3)} mm) > Threshold.`);
+          return false;
+      }
+
+      // 4. 只有通過所有考驗的 H 才能更新到系統狀態中
+      for (let i = 0; i < 9; i++) {
+          this.homographyMatrix[i] = this.candidateMatrix[i];
+      }
+      return true;
   }
 
   public applyTransform(out: Float64Array | Float32Array, x: number, y: number): void {
@@ -239,7 +347,7 @@ export class CalibrationEngineHPC {
   // 為了相容原本的 CalibrationEngine API，增加 calibrate alias
   public calibrate(srcPts: number[], dstPts: number[]): boolean {
     if (srcPts.length !== 8 || dstPts.length !== 8) return false;
-    const success = this.computeHomographyFrom4Points(srcPts, dstPts);
+    const success = this.computeRobustHomography(srcPts, dstPts);
     if (!success) {
       this.homographyMatrix.set([1, 0, 0, 0, 1, 0, 0, 0, 1]);
     }
