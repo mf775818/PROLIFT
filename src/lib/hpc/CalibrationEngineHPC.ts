@@ -1,43 +1,177 @@
 import { TrackingBuffer } from './TrackingBuffer';
+import { PerspectiveMath } from './PerspectiveMath';
 
 export class CalibrationEngineHPC {
   // 3x3 單應性矩陣 (Homography Matrix) 以一維陣列儲存以利 CPU 快取
-  private homographyMatrix: Float32Array = new Float32Array([
-    1, 0, 0,
-    0, 1, 0,
-    0, 0, 1
-  ]);
+  private readonly homographyMatrix = new Float64Array(9); 
+  private readonly homographyMatrixF32 = new Float32Array(9);
+  
+  private readonly matrixA = new Float64Array(8 * 9);
+  private readonly tempH = new Float64Array(9);
+  
+  // Hartley 正規化所需參數
+  private readonly srcNorm = new Float64Array(8);
+  private readonly dstNorm = new Float64Array(8);
+  private readonly T_src = new Float64Array(9); 
+  private readonly T_dst_inv = new Float64Array(9); 
+  
+  // SVD 所需緩衝區
+  private readonly matrixAtA = new Float64Array(9 * 9);
+  private readonly matrixV = new Float64Array(9 * 9);
 
-  // 用於高斯消去的預分配記憶體 (避免 GC)
-  private matrixA: Float64Array = new Float64Array(8 * 9); 
+  // PerspectiveMath 實例用於矩陣運算
+  private readonly perspectiveMath = new PerspectiveMath();
 
-  /**
-   * 更新透視矩陣 (可由 OpenCV findHomography 算出演算結果傳入)
-   */
   public updateHomography(matrix: number[]): void {
     for (let i = 0; i < 9; i++) {
-      this.homographyMatrix[i] = matrix[i];
+        this.homographyMatrix[i] = matrix[i];
     }
   }
 
   public getHomography(): Float32Array {
-      return this.homographyMatrix;
+      for (let i = 0; i < 9; i++) {
+          this.homographyMatrixF32[i] = this.homographyMatrix[i];
+      }
+      return this.homographyMatrixF32;
   }
 
   /**
-   * [新增] 核心 DLT 求解器 (Direct Linear Transformation)
-   * 傳入畫面上的 4 點 (畸變四邊形) 與 現實對應的 4 點 (完美矩形)
-   * srcPts: [u0, v0, u1, v1, u2, v2, u3, v3] (前上, 後上, 後下, 前下 的像素座標)
-   * dstPts: [x0, y0, x1, y1, x2, y2, x3, y3] (對應的真實物理座標，可自訂比例)
+   * 內部方法：Hartley 等向縮放正規化 (O(1) 效能)
    */
+  private normalize(pts: ArrayLike<number>, outNorm: Float64Array, outT: Float64Array, invert: boolean = false): void {
+      let cx = 0, cy = 0;
+      for (let i = 0; i < 4; i++) {
+          cx += pts[i * 2];
+          cy += pts[i * 2 + 1];
+      }
+      cx *= 0.25; cy *= 0.25;
+
+      let avgDist = 0;
+      for (let i = 0; i < 4; i++) {
+          const dx = pts[i * 2] - cx;
+          const dy = pts[i * 2 + 1] - cy;
+          avgDist += Math.sqrt(dx * dx + dy * dy);
+      }
+      avgDist *= 0.25;
+
+      const scale = avgDist > 1e-10 ? Math.SQRT2 / avgDist : 1.0;
+
+      if (invert) {
+          outT[0] = 1/scale; outT[1] = 0;       outT[2] = cx;
+          outT[3] = 0;       outT[4] = 1/scale; outT[5] = cy;
+          outT[6] = 0;       outT[7] = 0;       outT[8] = 1;
+      } else {
+          outT[0] = scale;   outT[1] = 0;       outT[2] = -scale * cx;
+          outT[3] = 0;       outT[4] = scale;   outT[5] = -scale * cy;
+          outT[6] = 0;       outT[7] = 0;       outT[8] = 1;
+      }
+
+      for (let i = 0; i < 4; i++) {
+          outNorm[i * 2] = (pts[i * 2] - cx) * scale;
+          outNorm[i * 2 + 1] = (pts[i * 2 + 1] - cy) * scale;
+      }
+  }
+  
+  /**
+   * 藉由 Jacobi Eigenvalue Algorithm 求解 A^T * A 的最小特徵向量
+   */
+  private solveSVD_Jacobi(): void {
+      const AtA = this.matrixAtA;
+      const V = this.matrixV;
+      const A = this.matrixA;
+      
+      AtA.fill(0);
+      for (let i = 0; i < 9; i++) {
+          for (let j = 0; j < 9; j++) {
+              let sum = 0;
+              for (let k = 0; k < 8; k++) {
+                  sum += A[k * 9 + i] * A[k * 9 + j];
+              }
+              AtA[i * 9 + j] = sum;
+          }
+      }
+
+      V.fill(0);
+      for (let i = 0; i < 9; i++) V[i * 9 + i] = 1.0;
+
+      const MAX_ITER = 50;
+      const EPS = 1e-12;
+      for (let iter = 0; iter < MAX_ITER; iter++) {
+          let maxVal = 0;
+          let p = 0, q = 1;
+          for (let i = 0; i < 9; i++) {
+              for (let j = i + 1; j < 9; j++) {
+                  let val = Math.abs(AtA[i * 9 + j]);
+                  if (val > maxVal) { maxVal = val; p = i; q = j; }
+              }
+          }
+
+          if (maxVal < EPS) break;
+
+          const spp = AtA[p * 9 + p];
+          const sqq = AtA[q * 9 + q];
+          const spq = AtA[p * 9 + q];
+          
+          let theta;
+          if (sqq === spp) {
+             theta = spq > 0 ? Math.PI / 4 : -Math.PI / 4;
+          } else {
+             theta = 0.5 * Math.atan2(2.0 * spq, sqq - spp);
+          }
+
+          const c = Math.cos(theta);
+          const s = Math.sin(theta);
+
+          for (let i = 0; i < 9; i++) {
+              if (i !== p && i !== q) {
+                  const api = AtA[p * 9 + i];
+                  const aqi = AtA[q * 9 + i];
+                  AtA[p * 9 + i] = c * api - s * aqi;
+                  AtA[i * 9 + p] = AtA[p * 9 + i];
+                  AtA[q * 9 + i] = s * api + c * aqi;
+                  AtA[i * 9 + q] = AtA[q * 9 + i];
+              }
+          }
+          
+          AtA[p * 9 + p] = c * c * spp - 2.0 * s * c * spq + s * s * sqq;
+          AtA[q * 9 + q] = s * s * spp + 2.0 * s * c * spq + c * c * sqq;
+          AtA[p * 9 + q] = 0;
+          AtA[q * 9 + p] = 0;
+
+          for (let i = 0; i < 9; i++) {
+              const vip = V[i * 9 + p];
+              const viq = V[i * 9 + q];
+              V[i * 9 + p] = c * vip - s * viq;
+              V[i * 9 + q] = s * vip + c * viq;
+          }
+      }
+
+      let minEval = AtA[0];
+      let minIdx = 0;
+      for (let i = 1; i < 9; i++) {
+          if (AtA[i * 9 + i] < minEval) {
+              minEval = AtA[i * 9 + i];
+              minIdx = i;
+          }
+      }
+
+      for (let i = 0; i < 9; i++) {
+          this.tempH[i] = V[i * 9 + minIdx];
+      }
+  }
+
   public computeHomographyFrom4Points(srcPts: Float32Array | number[], dstPts: Float32Array | number[]): boolean {
+    // 1. Hartley 正規化 (解決數值爆炸 BUG)
+    this.normalize(srcPts, this.srcNorm, this.T_src, false);
+    this.normalize(dstPts, this.dstNorm, this.T_dst_inv, true); 
+
     this.matrixA.fill(0);
     const A = this.matrixA;
 
-    // 建立 8x9 矩陣
+    // 2. 使用正規化後的座標建構 DLT 矩陣
     for (let i = 0; i < 4; i++) {
-      const u = srcPts[i * 2], v = srcPts[i * 2 + 1];
-      const x = dstPts[i * 2], y = dstPts[i * 2 + 1];
+      const u = this.srcNorm[i * 2], v = this.srcNorm[i * 2 + 1];
+      const x = this.dstNorm[i * 2], y = this.dstNorm[i * 2 + 1];
       
       const row1 = i * 18; // 2 * i * 9
       A[row1 + 0] = -u; A[row1 + 1] = -v; A[row1 + 2] = -1;
@@ -50,93 +184,65 @@ export class CalibrationEngineHPC {
       A[row2 + 6] = u * y; A[row2 + 7] = v * y; A[row2 + 8] = y;
     }
 
-    // 簡易高斯消去法解 Ah = 0 (固定 H[8] = 1)
-    for (let i = 0; i < 8; i++) {
-      // 找最大主元 (Pivoting)
-      let maxRow = i;
-      let maxVal = Math.abs(A[i * 9 + i]);
-      for (let j = i + 1; j < 8; j++) {
-        let val = Math.abs(A[j * 9 + i]);
-        if (val > maxVal) { maxVal = val; maxRow = j; }
-      }
-      if (maxVal < 1e-10) return false; // 矩陣奇異 (點重合或共線)
+    // 3. 以 Jacobi SVD 取代單純的高斯消去法，提取特徵向量作為暫存 H (Zero-Allocation)
+    this.solveSVD_Jacobi();
 
-      // 交換行
-      if (maxRow !== i) {
-        for (let k = i; k < 9; k++) {
-          let tmp = A[i * 9 + k];
-          A[i * 9 + k] = A[maxRow * 9 + k];
-          A[maxRow * 9 + k] = tmp;
-        }
-      }
+    // 4. 去正規化 Denormalization: H_final = T_dst_inv * H * T_src
+    this.perspectiveMath.multiplyMat3Mat3(this.homographyMatrix, this.T_dst_inv, this.tempH);
+    this.perspectiveMath.multiplyMat3Mat3(this.homographyMatrix, this.homographyMatrix, this.T_src);
 
-      // 消去
-      for (let j = i + 1; j < 8; j++) {
-        let factor = A[j * 9 + i] / A[i * 9 + i];
-        for (let k = i; k < 9; k++) {
-          A[j * 9 + k] -= factor * A[i * 9 + k];
-        }
-      }
+    // 確保 H[8] 不為 0 後縮放
+    const w = this.homographyMatrix[8];
+    if (Math.abs(w) > 1e-10) {
+        const invW = 1.0 / w;
+        for (let i = 0; i < 9; i++) this.homographyMatrix[i] *= invW;
     }
 
-    // 回代求解 H
-    const H = new Float64Array(9);
-    H[8] = 1.0;
-    for (let i = 7; i >= 0; i--) {
-      let sum = 0;
-      for (let j = i + 1; j < 9; j++) {
-        sum += A[i * 9 + j] * H[j];
-      }
-      H[i] = -sum / A[i * 9 + i];
-    }
-
-    // 更新到實例的 Homography Matrix
-    for (let i = 0; i < 9; i++) this.homographyMatrix[i] = H[i];
     return true;
   }
 
-  /**
-   * 將單一點轉換到真實物理空間
-   */
   public applyTransform(out: Float64Array | Float32Array, x: number, y: number): void {
     const m = this.homographyMatrix;
     const nx = m[0] * x + m[1] * y + m[2];
     const ny = m[3] * x + m[4] * y + m[5];
     const w  = m[6] * x + m[7] * y + m[8];
 
-    const invW = w !== 0 ? 1.0 / w : 1.0;
+    // 安全除法防護 (Div-By-Zero)
+    const invW = Math.abs(w) > 1e-8 ? 1.0 / w : 0;
     out[0] = nx * invW;
     out[1] = ny * invW;
   }
 
-  /**
-   * 批次轉換：將整個 Buffer 的點位在 O(N) 內完成三維校正
-   * 方法論：Data-Oriented Design, Loop Unrolling
-   */
   public applyPerspectiveTransform(buffer: TrackingBuffer): void {
     const { x, y, head } = buffer;
     const m = this.homographyMatrix;
 
-    // 提取矩陣參數到寄存器
     const m0 = m[0], m1 = m[1], m2 = m[2];
     const m3 = m[3], m4 = m[4], m5 = m[5];
     const m6 = m[6], m7 = m[7], m8 = m[8];
 
-    // 高速連續訪問循環
     for (let i = 0; i < head; i++) {
       const xi = x[i];
       const yi = y[i];
 
-      // 矩陣乘法展開
       const nx = m0 * xi + m1 * yi + m2;
       const ny = m3 * xi + m4 * yi + m5;
       const w  = m6 * xi + m7 * yi + m8;
 
-      const invW = w !== 0 ? 1.0 / w : 1.0;
-
-      // 原地回寫到連續內存區塊
+      // 安全除法防護 (Div-By-Zero)
+      const invW = Math.abs(w) > 1e-8 ? 1.0 / w : 0;
       x[i] = nx * invW;
       y[i] = ny * invW;
     }
+  }
+
+  // 為了相容原本的 CalibrationEngine API，增加 calibrate alias
+  public calibrate(srcPts: number[], dstPts: number[]): boolean {
+    if (srcPts.length !== 8 || dstPts.length !== 8) return false;
+    const success = this.computeHomographyFrom4Points(srcPts, dstPts);
+    if (!success) {
+      this.homographyMatrix.set([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+    }
+    return success;
   }
 }

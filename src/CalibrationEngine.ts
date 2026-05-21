@@ -1,5 +1,5 @@
 import { Point3D, BoundingBox, Perspective, CalibrationResult } from "./types";
-import { CalibrationEngine as HPCCalibration } from "./lib/hpc/CalibrationEngine";
+import { CalibrationEngineHPC as HPCCalibration } from "./lib/hpc/CalibrationEngineHPC";
 import { ProjectiveMathHPC } from "./lib/hpc/ProjectiveMathHPC";
 
 /**

@@ -1,5 +1,5 @@
 import { LiftMetricsBuffer } from '../lib/hpc/LiftMetricsBuffer';
-import { CalibrationEngine } from '../lib/hpc/CalibrationEngine';
+import { CalibrationEngineHPC } from '../lib/hpc/CalibrationEngineHPC';
 import { TrackingBuffer } from '../lib/hpc/TrackingBuffer';
 import { PhysicsEngineHPC } from '../lib/hpc/PhysicsEngineHPC';
 import { RobustKalmanFilter } from '../lib/hpc/RobustKalmanFilter';
@@ -9,7 +9,7 @@ import { OneEuroFilter } from '../lib/hpc/OneEuroFilter';
 const _self = self as unknown as Worker;
 
 let metricsBuffer: LiftMetricsBuffer | null = null;
-const calibrationEngine = new CalibrationEngine();
+const calibrationEngine = new CalibrationEngineHPC();
 let trackingBuffer: TrackingBuffer | null = null;
 const physicsEngine = new PhysicsEngineHPC();
 let rkfY: RobustKalmanFilter | null = null;
