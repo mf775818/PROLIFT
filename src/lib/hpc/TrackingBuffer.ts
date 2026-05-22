@@ -44,7 +44,18 @@ export class TrackingBuffer {
     
     this.meta = new Int32Array(this.buffer, offset, 4);
   }
-
+  public reset(): void {
+    this.meta[0] = 0; // Reset head counter
+    // Optional: Zero out data to prevent any residual influence (usually not needed as head controls access)
+    // For extreme precision requirements, uncomment:
+    // const len = Math.min(this.head, this.capacity);
+    // for (let i = 0; i < len; i++) {
+    //   this.x[i] = 0; this.y[i] = 0; this.z[i] = 0; this.t[i] = 0;
+    //   this.kneeAngle[i] = 0; this.hipAngle[i] = 0; this.ankleAngle[i] = 0; this.backAngle[i] = 0;
+    //   this.lKneeAngle[i] = 0; this.rKneeAngle[i] = 0; this.lHipAngle[i] = 0; this.rHipAngle[i] = 0;
+    //   this.lAnkleAngle[i] = 0; this.rAnkleAngle[i] = 0;
+    // }
+  }
   public push(
     x: number, y: number, z: number, t: number, 
     knee: number = 0, hip: number = 0, ankle: number = 0, back: number = 0,

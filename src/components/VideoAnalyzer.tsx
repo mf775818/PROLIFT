@@ -466,9 +466,16 @@ class RTSSmoother {
 class OpenCVTracker {
     prevGray: any = null; prevPts: any = null; isInitialized: boolean = false; currentROI: any = null; clahe: any = null;
     
+
+    reset() {
+        this.destroy();
+        this.isInitialized = false;
+        this.currentROI = null;
+    }
     initialize(ctx: CanvasRenderingContext2D, width: number, height: number, roi: any) {
         const cv = g_cv || (window as any).cv;
         if (!cv || !cv.Mat) return;
+        this.destroy();
         if (this.prevGray) this.prevGray.delete(); if (this.prevPts) this.prevPts.delete(); if (this.clahe) this.clahe.delete();
         
         const src = cv.imread(ctx.canvas); 
@@ -520,11 +527,9 @@ class OpenCVTracker {
             cv.cvtColor(src, fullNextGray, cv.COLOR_RGBA2GRAY, 0); 
             this.clahe.apply(fullNextGray, fullNextGray);
             
-            // --- INDUSTRIAL OPTIMIZATION: Adaptive ROI Cropping ---
-            const isMobile = window.matchMedia('(pointer: coarse)').matches;
-            const paddingScale = isMobile ? 0.5 : 0.25; // Mobile 2.0x (1 + 0.5*2), Desktop 1.5x (1 + 0.25*2)
-            const paddingX = this.currentROI.width * paddingScale;
-            const paddingY = this.currentROI.height * paddingScale;
+            // --- INDUSTRIAL OPTIMIZATION: Unified Fixed ROI Padding ---
+            const paddingX = 50;
+            const paddingY = 50;
             
             const rx = Math.max(0, this.currentROI.x - paddingX);
             const ry = Math.max(0, this.currentROI.y - paddingY);
@@ -547,8 +552,9 @@ class OpenCVTracker {
             status = new cv.Mat();
             err = new cv.Mat();
             
-            const winSize = isMobile ? new cv.Size(51, 51) : new cv.Size(41, 41); 
-            const maxLevel = isMobile ? 6 : 4;
+            // Unified Search Window across Desktop & Mobile
+            const winSize = new cv.Size(31, 31); 
+            const maxLevel = 4;
             
             const termCrit = new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 20, 0.01);
 
@@ -1506,6 +1512,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   };
 
   const processVideoFrameByFrame_v2 = async (vid: HTMLVideoElement, model: any) => {
+    // 解碼器喚醒 (強制移動端啟用硬體解碼管線)
+    vid.muted = true;
+    vid.playsInline = true;
+    if (vid.preload !== 'auto') vid.preload = 'auto';
+
     const duration = vid.duration;
     if (isNaN(duration) || !isFinite(duration) || duration <= 0) {
         console.error("Critical: Invalid video duration for analysis:", duration);
@@ -1529,8 +1540,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     
     rawDataRef.current = [];
     
-    const analysisCanvas = document.createElement('canvas');
-    const ctx = analysisCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    let analysisCanvas: HTMLCanvasElement | OffscreenCanvas = document.createElement('canvas');
+    if (typeof OffscreenCanvas !== 'undefined') {
+        analysisCanvas = new OffscreenCanvas(1, 1); // 尺寸後面會重設
+    }
+    const ctx = (analysisCanvas.getContext('2d', { alpha: false, willReadFrequently: true }) as CanvasRenderingContext2D);
     
     // 電腦版 CPU 的神經網路推論若降至 480，速度會提升將近 2~3 倍，而對追蹤關節依舊足夠。
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
@@ -1543,27 +1557,69 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     
     const resultsHandler = (results: PoseResult) => { if (frameResolve) frameResolve(results); };
     model.onResults(resultsHandler);
+    if (typeof model.reset === 'function') {
+        await model.reset();
+    }
+    let prevFrameData: Uint32Array | null = null;
+    let fallbackSeekedFired = false;
+    
+    // Fast Hash Function for comparing image changes
+    const computeFrameHash = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
+        if (!w || !h) return 0;
+        try {
+            // Sample a 32x32 center region for extreme performance
+            const sx = Math.max(0, Math.floor(w/2 - 16));
+            const sy = Math.max(0, Math.floor(h/2 - 16));
+            const imgData = ctx.getImageData(sx, sy, 32, 32);
+            let buf = new Uint32Array(imgData.data.buffer);
+            let sum = 0;
+            for(let i=0; i<buf.length; i+=4) sum += buf[i];
+            return sum;
+        } catch {
+            return 0;
+        }
+    };
 
     const waitForFrame = (targetTime: number) => new Promise<void>((resolve) => {
        let resolved = false;
-       const handler = () => { 
+       
+       const seekHandler = () => { 
            if (resolved) return;
-           resolved = true;
-           vid.removeEventListener('seeked', handler); 
-           resolve(); 
+           
+           if ('requestVideoFrameCallback' in vid) {
+               // Prefer RVFC, just note that seeked fired to avoid timeout
+               fallbackSeekedFired = true;
+           } else {
+               resolved = true;
+               vid.removeEventListener('seeked', seekHandler); 
+               resolve();
+           }
        };
-       vid.addEventListener('seeked', handler);
-       try {
-           vid.currentTime = targetTime;
-       } catch (e) {
+       vid.addEventListener('seeked', seekHandler);
+       
+       try { vid.currentTime = targetTime; } 
+       catch (e) {
            console.warn("vid.currentTime assignment failed: ", e);
-           handler();
+           seekHandler();
        }
-       // 🐒C++++ FIX 3: Timeout 發生時，必須徹底拔除 Listener，避免記憶體與事件洩漏
+
+       if ('requestVideoFrameCallback' in vid) {
+           const rvfcCallback = () => {
+               if (!resolved) {
+                   resolved = true;
+                   vid.removeEventListener('seeked', seekHandler);
+                   resolve();
+               }
+           };
+           (vid as any).requestVideoFrameCallback(rvfcCallback);
+       }
+       
+       // Timeout 發生時拔除 Listener
        setTimeout(() => { 
            if (!resolved) { 
-               vid.removeEventListener('seeked', handler); // <== 這是解決「越來越慢」的關鍵
-               handler(); 
+               resolved = true;
+               vid.removeEventListener('seeked', seekHandler);
+               resolve(); 
            } 
        }, 2000);
     });
@@ -1622,13 +1678,20 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
            if (ctx && analysisCanvas.width > 0 && analysisCanvas.height > 0) {
              ctx.drawImage(vid, 0, 0, analysisCanvas.width, analysisCanvas.height);
              
-             if (currentTime > 0 && cvTracker.isInitialized) {
+             // 工業級優化：幀驗證迴圈 (防止 iOS 假穩定)
+             const currentHash = computeFrameHash(ctx, analysisCanvas.width, analysisCanvas.height);
+             const isDuplicateFrame = (currentTime > 0) && (currentHash === prevFrameData);
+             prevFrameData = currentHash as any;
+
+             if (currentTime > 0 && cvTracker.isInitialized && !isDuplicateFrame) {
                  try {
                     const res = cvTracker.track(ctx);
                     if (res) trackedCenter = { x: (res.x + res.width / 2) / procW, y: (res.y + res.height / 2) / procH };
                  } catch (cvTrackErr) {
                     console.warn("OpenCV Tracking error:", cvTrackErr);
                  }
+             } else if (isDuplicateFrame && fallbackSeekedFired) {
+                 console.warn("Skipped duplicate decoded frame (iOS Safari bug mitigaton), Time:", currentTime);
              }
              
              // --- PROTECTED POSE DETECTION WITH TIMEOUT ---
