@@ -11,11 +11,28 @@ import { KalmanSmoother1D } from '../lib/hpc/KalmanSmoother';
 import { OnsetDetectorHPC } from '../lib/hpc/OnsetDetectorHPC';
 import { SpineKinematicsHPC } from '../lib/hpc/SpineKinematicsHPC';
 import { AnkleKinematicsHPC } from '../lib/hpc/AnkleKinematicsHPC';
+import { forceAppRemount } from '../main';
 
 
 // Module-level variable to store the initialized OpenCV instance, avoiding re-assignment to window.cv if it's read-only
 let g_cv: any = null;
 const perspectiveMath = new PerspectiveMath();
+
+export const wipeEngineGlobals = () => {
+    // 1. Clear OpenCV module instances
+    g_cv = null;
+    try { if (window.cv) { window.cv = undefined; delete (window as any).cv; } } catch(e){}
+    try { if ((window as any).cvDidLoad) { (window as any).cvDidLoad = undefined; delete (window as any).cvDidLoad; } } catch(e){}
+    
+    // 2. Clear MediaPipe Pose module instances
+    try { if (window.Pose) { window.Pose = undefined; delete (window as any).Pose; } } catch(e){}
+    
+    // 3. Purge existing script tags from DOM to force browser to re-download/re-execute them cleanly 
+    document.querySelectorAll('script[src*="opencv.js"]').forEach(s => s.remove());
+    document.querySelectorAll('script[src*="mediapipe"]').forEach(s => s.remove());
+
+    console.log("Memory Cleared: All vision/biomechanics engines have been purged from globals.");
+};
 
 interface VideoAnalyzerProps {
   videoFile: File | null;
@@ -3172,16 +3189,25 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                           {normalizedROI && (
                             <div className="relative">
                               <button 
-                                 onClick={startAnalysis} 
-                                 disabled={!cvReady}
-                                 className={`px-4 py-2 rounded-lg text-xs font-bold tracking-wider text-white border border-blue-400/50 shadow-xl backdrop-blur-md flex items-center gap-2 ${cvReady ? 'bg-blue-600 hover:bg-blue-500' : 'bg-zinc-600 cursor-not-allowed'}`}
+                                 onClick={() => {
+                                     if (cvLoadingError) {
+                                         forceAppRemount();
+                                     } else {
+                                         startAnalysis();
+                                     }
+                                 }} 
+                                 disabled={!cvReady && !cvLoadingError}
+                                 className={`px-4 py-2 rounded-lg text-xs font-bold tracking-wider text-white border shadow-xl backdrop-blur-md flex items-center gap-2 transition-all 
+                                 ${cvReady ? 'bg-blue-600 hover:bg-blue-500 border-blue-400/50' 
+                                 : cvLoadingError ? 'bg-red-600 hover:bg-red-500 border-red-500' 
+                                 : 'bg-zinc-600 border-zinc-500 cursor-not-allowed'}`}
                               >
                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                                 {cvReady ? 'START TRACKING' : (cvLoadingError ? 'CORE ERROR' : 'LOADING...')}
+                                 {cvReady ? 'START TRACKING' : (cvLoadingError ? 'HOT RELOAD ENGINE (F5)' : 'LOADING...')}
                               </button>
                               {cvLoadingError && !cvReady && (
                                   <div className="absolute top-full mt-2 right-0 w-48 text-[10px] text-red-400 bg-black/80 p-2 rounded border border-red-500/30">
-                                      Vision engine failed to load. Please refresh or check your connection.
+                                      Vision engine failed to load. Click to force a clean reset.
                                   </div>
                               )}
                             </div>

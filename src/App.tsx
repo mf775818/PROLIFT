@@ -5,6 +5,8 @@ import { LiftChart } from './components/LiftChart';
 import { LiftMetrics } from './types';
 import { OnsetDetectorHPC } from './lib/hpc/OnsetDetectorHPC';
 
+import { forceAppRemount } from './main';
+
 // --- UX COMPONENT: RESIZER HANDLE ---
 const Resizer = ({ orientation, onResizeStart, isResizing }: { orientation: 'vertical' | 'horizontal', onResizeStart: (e: React.MouseEvent | React.TouchEvent) => void, isResizing: boolean }) => {
     const isVert = orientation === 'vertical';
@@ -437,7 +439,7 @@ const App = () => {
                  <h2 className="text-xl font-bold tracking-tight text-white mb-2">INITIALIZING PROLIFT AI</h2>
                  <p className="text-sm text-zinc-400 text-center mb-8">Loading core computer vision and analysis engines to ensure industrial-grade accuracy.</p>
                  
-                 <div className="w-full space-y-4 mb-8">
+                 <div className="w-full space-y-4 mb-4">
                      {initLog.map((log, idx) => (
                          <div key={idx} className="flex flex-col bg-zinc-950 p-4 rounded-xl border border-zinc-800">
                              <div className="flex items-center justify-between">
@@ -453,14 +455,19 @@ const App = () => {
                      ))}
                  </div>
 
-                 {initFailed && (
-                     <button 
-                        onClick={() => window.location.reload()}
-                        className="w-full py-3 bg-red-600 hover:bg-red-500 text-white rounded-lg font-bold tracking-wider text-sm shadow-[0_0_15px_rgba(239,68,68,0.3)] transition-colors"
-                     >
-                         RELOAD / RE-SYNC ENGINES
-                     </button>
-                 )}
+                 <button 
+                    onClick={() => {
+                        // Industrial Grade Sandbox Reload
+                        // Fallback mechanisms because some sandboxes suppress location.reload()
+                        // Use React level hard remount to destroy all state internally
+                        forceAppRemount();
+                    }}
+                    className={`w-full py-3 mb-4 rounded-lg font-bold tracking-wider text-[11px] uppercase transition-colors flex justify-center items-center gap-2 ${initFailed ? 'bg-red-600 hover:bg-red-500 text-white shadow-[0_0_15px_rgba(239,68,68,0.3)]' : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 hover:border-zinc-500'}`}
+                 >
+                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                     {initFailed ? 'Critical Reload (F5)' : 'Force Restart Engines'}
+                 </button>
+
                  {!initFailed && (
                      <div className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono animate-pulse">
                          Please wait, analyzing environment...
