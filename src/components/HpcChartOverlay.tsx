@@ -1,5 +1,12 @@
 import React, { useRef, useEffect } from 'react';
 
+export interface ActiveNode {
+  xVal: number;
+  yVal: number;
+  color: string;
+  yAxisOrientation: 'left' | 'right' | 'none';
+}
+
 interface HpcChartOverlayProps {
   containerRef: React.RefObject<HTMLDivElement>;
   currentTime: number;
@@ -7,10 +14,17 @@ interface HpcChartOverlayProps {
   zoomDomain: { min: number; max: number } | null;
   processedData: any[];
   isVisible: boolean;
-  // Left and right margins are fallback parameters, 
-  // but now the algorithm dynamically samples actual geometries.
   leftMargin?: number;
   rightMargin?: number;
+  activeNodes?: ActiveNode[];
+  isScatter?: boolean;
+}
+
+interface ScaleMapping {
+  scaleX: (val: number) => number;
+  scaleYLeft: (val: number) => number;
+  scaleYRight: (val: number) => number;
+  isValid: boolean;
 }
 
 export const HpcChartOverlay: React.FC<HpcChartOverlayProps> = ({
@@ -21,7 +35,9 @@ export const HpcChartOverlay: React.FC<HpcChartOverlayProps> = ({
   processedData,
   isVisible,
   leftMargin = 30,
-  rightMargin = 35
+  rightMargin = 35,
+  activeNodes = [],
+  isScatter = false
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
@@ -30,42 +46,120 @@ export const HpcChartOverlay: React.FC<HpcChartOverlayProps> = ({
   const geometryRef = useRef({
     gridLeft: 0,
     gridWidth: 0,
+    gridTop: 0,
+    gridHeight: 0,
+    isValid: false
+  });
+
+  const scaleMappingRef = useRef<ScaleMapping>({
+    scaleX: () => 0,
+    scaleYLeft: () => 0,
+    scaleYRight: () => 0,
     isValid: false
   });
 
   // State cache to avoid React closure traps in RAF loop
   const stateRef = useRef({
-    currentTime, startTimeVal, zoomDomain, processedData, leftMargin, rightMargin
+    currentTime, startTimeVal, zoomDomain, processedData, leftMargin, rightMargin, activeNodes, isScatter
   });
 
   useEffect(() => {
-    stateRef.current = { currentTime, startTimeVal, zoomDomain, processedData, leftMargin, rightMargin };
-  }, [currentTime, startTimeVal, zoomDomain, processedData, leftMargin, rightMargin]);
+    stateRef.current = { currentTime, startTimeVal, zoomDomain, processedData, leftMargin, rightMargin, activeNodes, isScatter };
+  }, [currentTime, startTimeVal, zoomDomain, processedData, leftMargin, rightMargin, activeNodes, isScatter]);
 
   // Precise geometry sampling combining ResizeObserver & MutationObserver
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
+    const extractScaleFromTicks = (selector: string, isX: boolean) => {
+        const ticks = container.querySelectorAll(selector);
+        if (ticks.length < 2) return null;
+        
+        let p1: {val: number, px: number} | null = null;
+        let p2: {val: number, px: number} | null = null;
+        
+        ticks.forEach((tick, i) => {
+            const textEl = tick.querySelector('text');
+            if(!textEl) return;
+            const val = parseFloat(textEl.textContent?.replace(/[^\d.-]/g, '') || '');
+            if(isNaN(val)) return;
+            
+            // Recharts puts translation on a <g> tag inside or on the tick itself
+            const transformEl = tick.hasAttribute('transform') ? tick : tick.querySelector('g[transform]');
+            if(transformEl) {
+                 const transform = transformEl.getAttribute('transform');
+                 if (transform) {
+                     const m = transform.match(/translate\(([-\d.]+)[,\s]+([-\d.]+)\)/);
+                     if (m) {
+                         const px = isX ? parseFloat(m[1]) : parseFloat(m[2]);
+                         if (!p1) p1 = {val, px};
+                         else p2 = {val, px}; 
+                     }
+                 }
+            }
+        });
+        
+        if (p1 && p2 && p1.val !== p2.val) {
+            const m = (p2.px - p1.px) / (p2.val - p1.val);
+            const b = p1.px - m * p1.val;
+            return (val: number) => m * val + b;
+        }
+        return null;
+    };
+
     const sampleGeometry = () => {
       const containerRect = container.getBoundingClientRect();
       
-      // 1. 動態尋找精確的 X 軸網格或底線，這是最準確的資料範圍邊界
       const xAxisLine = container.querySelector('.recharts-xAxis .recharts-cartesian-axis-line');
       const gridBox = container.querySelector('.recharts-cartesian-grid');
-      const exactBoundaryEl = xAxisLine || gridBox;
+      
+      let gridLeft = stateRef.current.leftMargin || 30;
+      let gridTop = 10;
+      let gridWidth = containerRect.width - gridLeft - (stateRef.current.rightMargin || 35);
+      let gridHeight = containerRect.height - 40;
+      let isValid = false;
 
-      if (exactBoundaryEl) {
-         const exactRect = exactBoundaryEl.getBoundingClientRect();
-         // The exact start and end of the drawn chart data mapping
-         const wLeftAxis = exactRect.left - containerRect.left;
-         const wEffective = exactRect.width;
+      // Prefer Cartesian Grid for exact bounds, fallback to xAxisLine for width/left
+      if (gridBox) {
+          const rect = gridBox.getBoundingClientRect();
+          gridLeft = rect.left - containerRect.left;
+          gridTop = rect.top - containerRect.top;
+          gridWidth = rect.width;
+          gridHeight = rect.height;
+          isValid = true;
+      } else if (xAxisLine) {
+          const rect = xAxisLine.getBoundingClientRect();
+          gridLeft = rect.left - containerRect.left;
+          gridWidth = rect.width;
+          isValid = true;
+      }
 
+      if (isValid) {
          geometryRef.current = {
-            gridLeft: wLeftAxis,
-            gridWidth: wEffective,
+            gridLeft,
+            gridTop,
+            gridWidth,
+            gridHeight,
             isValid: true
          };
+         
+         // 2. High-Precision Mathematical XY Mapping scale closure
+         const scaleX = extractScaleFromTicks('.recharts-xAxis .recharts-cartesian-axis-tick', true);
+         const scaleYLeft = extractScaleFromTicks('.recharts-yAxis[orientation="left"] .recharts-cartesian-axis-tick', false) 
+                            || extractScaleFromTicks('.recharts-yAxis:not([orientation="right"]) .recharts-cartesian-axis-tick', false);
+         const scaleYRight = extractScaleFromTicks('.recharts-yAxis[orientation="right"] .recharts-cartesian-axis-tick', false);
+         
+         // Pre-calculate fallback scales if DOM doesn't have ticks yet
+         const fallbackScaleY = (yVal: number) => gridTop + geometryRef.current.gridHeight / 2; // Dead center fallback
+         
+         scaleMappingRef.current = {
+             scaleX: scaleX || ((val: number) => gridLeft),
+             scaleYLeft: scaleYLeft || fallbackScaleY,
+             scaleYRight: scaleYRight || fallbackScaleY,
+             isValid: !!scaleX
+         };
+
       } else {
          // Fallback directly to state margins
          const state = stateRef.current;
@@ -75,7 +169,9 @@ export const HpcChartOverlay: React.FC<HpcChartOverlayProps> = ({
          
          geometryRef.current = {
             gridLeft: wLeftAxis,
+            gridTop: 10,
             gridWidth: W_container_rect - wLeftAxis - wRightVariance,
+            gridHeight: containerRect.height - 40,
             isValid: true
          };
       }
@@ -136,7 +232,9 @@ export const HpcChartOverlay: React.FC<HpcChartOverlayProps> = ({
       
       const dpr = window.devicePixelRatio || 1;
       const state = stateRef.current;
-      
+      const mappedGeom = geometryRef.current;
+      const scales = scaleMappingRef.current;
+
       if (!state.processedData || state.processedData.length === 0) {
           rafRef.current = requestAnimationFrame(renderLoop);
           return;
@@ -151,84 +249,126 @@ export const HpcChartOverlay: React.FC<HpcChartOverlayProps> = ({
       // Apply transformation matrix for HDPI coordinate mapping
       ctx.scale(dpr, dpr);
       
-      const domain = state.zoomDomain || {
-        min: state.processedData[0]?.timeVal || 0,
-        max: state.processedData[state.processedData.length - 1]?.timeVal || 1
-      };
-      
       let currentVideoTime = state.currentTime;
       const video = document.getElementById('main-video-player') as HTMLVideoElement;
       if (video && !video.paused) {
         currentVideoTime = video.currentTime;
       }
 
-      // Linear interpolation factor (\Delta t)
+      // Linear interpolation fallback (\Delta t)
+      const domain = state.zoomDomain || {
+        min: state.processedData[0]?.timeVal || 0,
+        max: state.processedData[state.processedData.length - 1]?.timeVal || 1
+      };
+      
       const relativeTime = currentVideoTime - state.startTimeVal;
       const domainDiff = domain.max - domain.min;
+      const alpha = domainDiff > 0 ? (relativeTime - domain.min) / domainDiff : 0;
       
-      // Calculate alpha progress
-      let alpha = domainDiff > 0 ? (relativeTime - domain.min) / domainDiff : 0;
+      const fallbackGridLeft = state.leftMargin || 30;
+      const fallbackGridWidth = Math.max(1, cssWidth - fallbackGridLeft - (state.rightMargin || 35));
+      const gridLeft = mappedGeom.isValid ? mappedGeom.gridLeft : fallbackGridLeft;
+      const gridWidth = mappedGeom.isValid ? mappedGeom.gridWidth : fallbackGridWidth;
       
-      // Fallback variables in case observers haven't picked up Recharts elements yet
-      const fallbackGridLeft = state.leftMargin;
-      const fallbackGridWidth = Math.max(1, cssWidth - state.leftMargin - state.rightMargin);
-      
-      const gridLeft = geometryRef.current.isValid ? geometryRef.current.gridLeft : fallbackGridLeft;
-      const gridWidth = geometryRef.current.isValid ? geometryRef.current.gridWidth : fallbackGridWidth;
-      
-      // Data Space -> Pixel Space interpolation
-      // Sub-pixel snapping using Math.round(val) to land directly on the grid
-      const exactX = gridLeft + (alpha * gridWidth);
+      // Data Space -> Pixel Space X coordinates calculation
+      let exactX = gridLeft + (alpha * gridWidth);
+      if (scales.isValid && !state.isScatter) {
+         // High-Precision override via direct Math function
+         const testX = scales.scaleX(relativeTime);
+         if (!isNaN(testX) && isFinite(testX)) {
+             exactX = testX;
+         }
+      }
+
       const pxX = Math.round(exactX); 
 
       // 1. Draw elapsed progress background
-      if (alpha > 0) {
+      if (alpha > 0 && !state.isScatter) {
         ctx.fillStyle = 'rgba(156, 163, 175, 0.15)'; 
-        // Snap width to avoid blurry sub-pixel edge
-        // Limit the shaded area to the right edge of the grid
         const shadeWidth = Math.min(pxX - Math.round(gridLeft), Math.round(gridWidth));
-        if (shadeWidth > 0) {
-            ctx.fillRect(Math.round(gridLeft), 0, shadeWidth, cssHeight);
+        if (shadeWidth > 0 && pxX >= gridLeft) {
+            ctx.fillRect(Math.round(gridLeft), mappedGeom.gridTop, shadeWidth, mappedGeom.gridHeight || cssHeight);
         }
       }
       
       // 2. High-precision dashed indicator line
-      // ONLY draw if it's strictly within the current zoomed bounding box
-      if (alpha >= 0.0 && alpha <= 1.0) {
+      if (!state.isScatter && alpha >= 0.0 && alpha <= 1.0 && pxX >= gridLeft && pxX <= gridLeft + gridWidth) {
         const timeNow = performance.now();
         const dashHeight = 8;
         const gapHeight = 4;
       
-        ctx.strokeStyle = 'rgba(156, 163, 175, 0.8)';
-        ctx.lineWidth = 2; 
+        ctx.strokeStyle = 'rgba(250, 204, 21, 0.8)';
+        ctx.lineWidth = 1.5; 
         ctx.setLineDash([dashHeight, gapHeight]);
         ctx.lineDashOffset = -((timeNow / 50) % (dashHeight + gapHeight));
         
         ctx.beginPath();
-        // Snapping coordinates down to nearest half-pixel guarantees sharp rendering on odd-pixel widths
-        const drawX = pxX + (ctx.lineWidth % 2 === 1 ? 0.5 : 0);
-        ctx.moveTo(drawX, 0);
-        ctx.lineTo(drawX, cssHeight);
+        const drawX = pxX + 0.5;
+        const startY = mappedGeom.isValid ? mappedGeom.gridTop : 0;
+        const endY = mappedGeom.isValid ? mappedGeom.gridTop + mappedGeom.gridHeight : cssHeight;
+        
+        ctx.moveTo(drawX, startY);
+        ctx.lineTo(drawX, endY);
         ctx.stroke();
         
-        // 3. Playhead Marker Head
+        ctx.setLineDash([]);
+        
+        // Playhead Marker Head
         ctx.fillStyle = 'rgba(250, 204, 21, 0.9)'; 
         ctx.beginPath();
-        ctx.moveTo(drawX, 0);
-        ctx.lineTo(drawX - 6, 0);
-        ctx.lineTo(drawX - 6, 12);
-        ctx.lineTo(drawX + 6, 12);
-        ctx.lineTo(drawX + 6, 0);
+        ctx.moveTo(drawX, startY);
+        ctx.lineTo(drawX - 6, startY);
+        ctx.lineTo(drawX - 6, startY + 10);
+        ctx.lineTo(drawX + 6, startY + 10);
+        ctx.lineTo(drawX + 6, startY);
         ctx.closePath();
         ctx.fill();
         
-        // 4. Time Signature Tracking
+        // Time Signature Tracking
         ctx.fillStyle = 'rgba(255, 255, 255, 0.90)';
         ctx.font = 'bold 10px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(relativeTime.toFixed(2) + 's', drawX, 24);
+        // Base label underneath axes frame
+        ctx.fillText(relativeTime.toFixed(2) + 's', drawX, endY + 14);
       }
       
+      // 3. Apple-like Pure Canvas Multiple Nodes drawing
+      if (state.activeNodes && state.activeNodes.length > 0 && scales.isValid) {
+         ctx.globalCompositeOperation = 'source-over';
+         
+         for (const node of state.activeNodes) {
+             const cx = Math.round(scales.scaleX(node.xVal) * 2) / 2;
+             
+             let cyExact = 0;
+             if (node.yAxisOrientation === 'right') cyExact = scales.scaleYRight(node.yVal);
+             else if (node.yAxisOrientation === 'left') cyExact = scales.scaleYLeft(node.yVal);
+             else cyExact = scales.scaleYLeft(node.yVal); // Fallback assumption
+             
+             const cy = Math.round(cyExact * 2) / 2;
+
+             // Ensure bound clipping loosely so we don't draw far outside
+             if (cx >= gridLeft - 10 && cx <= gridLeft + gridWidth + 10) {
+                 // Ambient glow / Ao transition
+                 ctx.shadowColor = node.color;
+                 ctx.shadowBlur = 10;
+                 ctx.shadowOffsetX = 0;
+                 ctx.shadowOffsetY = 0;
+
+                 ctx.beginPath();
+                 ctx.arc(cx, cy, 4.5, 0, Math.PI * 2);
+                 ctx.fillStyle = node.color;
+                 ctx.fill();
+                 
+                 // Inner white solid stroke equivalent
+                 ctx.shadowBlur = 0;
+                 ctx.lineWidth = 2;
+                 ctx.strokeStyle = '#ffffff';
+                 ctx.stroke();
+             }
+         }
+      }
+      
+      ctx.globalCompositeOperation = 'source-over'; // Reset
       ctx.restore();
       
       rafRef.current = requestAnimationFrame(renderLoop);

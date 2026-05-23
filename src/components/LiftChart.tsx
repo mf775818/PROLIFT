@@ -40,7 +40,7 @@ interface ProcessedLiftMetrics extends LiftMetrics {
 
 type ChartMode = 'kinematics' | 'kinetics' | 'trajectory' | 'power' | 'angles';
 
-export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTime, barbellMass, onCursorMove, onSeekToTime }) => {
+export const LiftChart: React.FC<LiftChartProps> = React.memo(({ data, currentTime, barbellMass, onCursorMove, onSeekToTime }) => {
   const [mode, setMode] = useState<ChartMode>('kinematics');
   const [fullAngleMode, setFullAngleMode] = useState(false);
   
@@ -133,35 +133,7 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
       setZoomDomain(null);
   }, [data]);
 
-  // --- 工業級：事件驅動與防抖重繪 (Event-Driven Debounced Resize) ---
-  const [resizeTick, setResizeTick] = useState(0);
-  const debounceTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-      if (!chartContainerRef.current) return;
-
-      // 訂閱瀏覽器原生尺寸變更事件 (非輪詢迴圈)
-      const resizeObserver = new ResizeObserver(() => {
-          window.requestAnimationFrame(() => {
-              // 只要事件還在連續觸發(例如使用者正在拖拉)，就取消上一次的重繪排程
-              if (debounceTimerRef.current) {
-                  window.clearTimeout(debounceTimerRef.current);
-              }
-              
-              // 只有當使用者「停止拖拉」超過 150 毫秒後，才派發唯一一次的更新信號
-              debounceTimerRef.current = window.setTimeout(() => {
-                  setResizeTick(Date.now());
-              }, 150);
-          });
-      });
-
-      resizeObserver.observe(chartContainerRef.current);
-
-      return () => {
-          resizeObserver.disconnect();
-          if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
-      };
-  }, []);
+  // Remove the unneeded resize tick, we can proceed directly to data checking
 
   const getExportData = () => {
     if (!processedData || processedData.length === 0) return null;
@@ -567,6 +539,50 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
       return closest;
   }, [processedData, currentTime, startTimeVal]);
 
+  // Provide exact points to HpcChartOverlay without relying on Recharts ReferenceDot
+  const activeNodes = useMemo(() => {
+    if (!currentPoint) return [];
+    
+    // We only pass data nodes. The playhead itself is handled automatically if timeVal matches zoom
+    if (mode === 'kinematics') {
+        return [
+           { xVal: currentPoint.timeVal, yVal: currentPoint.velocity, color: '#facc15', yAxisOrientation: 'left' },
+           { xVal: currentPoint.timeVal, yVal: currentPoint.height, color: '#3b82f6', yAxisOrientation: 'right' }
+        ];
+    } else if (mode === 'kinetics') {
+        return [
+           { xVal: currentPoint.timeVal, yVal: currentPoint.force, color: '#ef4444', yAxisOrientation: 'left' },
+           { xVal: currentPoint.timeVal, yVal: currentPoint.acceleration, color: '#10b981', yAxisOrientation: 'right' }
+        ];
+    } else if (mode === 'power') {
+        return [
+           { xVal: currentPoint.timeVal, yVal: currentPoint.power, color: '#ef4444', yAxisOrientation: 'left' }
+        ];
+    } else if (mode === 'angles') {
+        if (fullAngleMode) {
+           return [
+              { xVal: currentPoint.timeVal, yVal: currentPoint.lHipAngle || 0, color: '#60a5fa', yAxisOrientation: 'left' },
+              { xVal: currentPoint.timeVal, yVal: currentPoint.rHipAngle || 0, color: '#3b82f6', yAxisOrientation: 'left' },
+              { xVal: currentPoint.timeVal, yVal: currentPoint.lKneeAngle || 0, color: '#facc15', yAxisOrientation: 'left' },
+              { xVal: currentPoint.timeVal, yVal: currentPoint.rKneeAngle || 0, color: '#fb923c', yAxisOrientation: 'left' },
+              { xVal: currentPoint.timeVal, yVal: currentPoint.lAnkleAngle || 0, color: '#10b981', yAxisOrientation: 'left' },
+              { xVal: currentPoint.timeVal, yVal: currentPoint.rAnkleAngle || 0, color: '#2dd4bf', yAxisOrientation: 'left' },
+           ];
+        } else {
+           return [
+              { xVal: currentPoint.timeVal, yVal: currentPoint.hipAngle, color: '#3b82f6', yAxisOrientation: 'left' },
+              { xVal: currentPoint.timeVal, yVal: currentPoint.kneeAngle, color: '#facc15', yAxisOrientation: 'left' },
+              { xVal: currentPoint.timeVal, yVal: currentPoint.ankleAngle, color: '#10b981', yAxisOrientation: 'left' },
+           ];
+        }
+    } else if (mode === 'scatter') {
+        return [
+           { xVal: currentPoint.xDev, yVal: currentPoint.yHgt, color: '#facc15', yAxisOrientation: 'left' }
+        ];
+    }
+    return [];
+  }, [currentPoint, mode, fullAngleMode]);
+
   if (!data || data.length === 0) {
     return (
       <div className="h-full w-full flex items-center justify-center text-zinc-500 text-sm">
@@ -708,10 +724,12 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
             isVisible={mode !== 'trajectory'}
             leftMargin={mode === 'kinetics' || mode === 'power' ? 40 : 30} 
             rightMargin={(mode === 'kinematics' || mode === 'kinetics') ? 65 : 10}
+            activeNodes={activeNodes as any}
+            isScatter={mode === 'scatter'}
           />
           
-          {/* 將 resizeTick 交給 ResponsiveContainer，只在拖曳結束後讓圖表引擎重新計算一次座標 */}
-          <ResponsiveContainer key={`rc-engine-${resizeTick}`} width="100%" height="100%" minWidth={1} minHeight={1}>
+          {/* 將 resizeTick 交給 HpcChartOverlay 控制同步，ResponsiveContainer 自行管理 */}
+          <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
           {mode === 'kinematics' ? (
             <ComposedChart data={processedData} onMouseMove={handleTooltip} onClick={handleChartClick} margin={{ top: 5, right: 35, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
@@ -726,12 +744,7 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
               />
               <ReferenceLine yAxisId="left" x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
               
-              {currentPoint && (
-                  <>
-                    <ReferenceDot yAxisId="left" x={currentPoint.timeVal} y={currentPoint.velocity} r={4} fill="#facc15" stroke="white" strokeWidth={2} />
-                    <ReferenceDot yAxisId="right" x={currentPoint.timeVal} y={currentPoint.height} r={4} fill="#3b82f6" stroke="white" strokeWidth={2} />
-                  </>
-              )}
+              {/* Pure Canvas Overlay handles hover nodes */}
               <Area yAxisId="left" type="monotone" dataKey="velocity" stroke="#facc15" fill="url(#velGradient)" fillOpacity={0.1} strokeWidth={2} isAnimationActive={false} />
               <Line yAxisId="right" type="monotone" dataKey="height" stroke="#3b82f6" strokeWidth={2} dot={false} isAnimationActive={false} />
               <defs>
@@ -754,12 +767,7 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
               />
               <ReferenceLine yAxisId="left" x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
               
-              {currentPoint && (
-                  <>
-                    <ReferenceDot yAxisId="left" x={currentPoint.timeVal} y={currentPoint.force} r={4} fill="#ef4444" stroke="white" strokeWidth={2} />
-                    <ReferenceDot yAxisId="right" x={currentPoint.timeVal} y={currentPoint.acceleration} r={4} fill="#10b981" stroke="white" strokeWidth={2} />
-                  </>
-              )}
+              {/* Pure Canvas Overlay handles hover nodes */}
               <Line yAxisId="left" type="monotone" dataKey="force" stroke="#ef4444" strokeWidth={2} dot={false} isAnimationActive={false} />
               <Line yAxisId="right" type="monotone" dataKey="acceleration" stroke="#10b981" strokeWidth={1.5} dot={false} strokeDasharray="4 4" isAnimationActive={false} />
             </ComposedChart>
@@ -775,9 +783,7 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
               />
               <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
               
-              {currentPoint && (
-                 <ReferenceDot x={currentPoint.timeVal} y={currentPoint.power} r={4} fill="#ef4444" stroke="white" strokeWidth={2} />
-              )}
+              {/* Pure Canvas Overlay handles hover nodes */}
               <Area type="monotone" dataKey="power" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} strokeWidth={2} isAnimationActive={false} />
             </AreaChart>
           ) : mode === 'angles' ? (
@@ -827,27 +833,7 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
                  }}
               />
               <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
-              {currentPoint && (
-                <>
-                  <ReferenceDot x={currentPoint.timeVal} y={currentPoint.backAngle || 0} r={3} fill="#a78bfa" stroke="none" />
-                  {fullAngleMode ? (
-                    <>
-                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.lHipAngle || 0} r={3} fill="#60a5fa" stroke="none" />
-                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.rHipAngle || 0} r={3} fill="#3b82f6" stroke="none" />
-                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.lKneeAngle || 0} r={3} fill="#facc15" stroke="none" />
-                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.rKneeAngle || 0} r={3} fill="#fb923c" stroke="none" />
-                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.lAnkleAngle || 0} r={3} fill="#10b981" stroke="none" />
-                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.rAnkleAngle || 0} r={3} fill="#2dd4bf" stroke="none" />
-                    </>
-                  ) : (
-                    <>
-                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.hipAngle} r={3} fill="#3b82f6" stroke="none" />
-                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.kneeAngle} r={3} fill="#facc15" stroke="none" />
-                      <ReferenceDot x={currentPoint.timeVal} y={currentPoint.ankleAngle} r={3} fill="#10b981" stroke="none" />
-                    </>
-                  )}
-                </>
-              )}
+              {/* Pure Canvas Overlay handles hover nodes */}
               <Line name="Back" type="monotone" dataKey="backAngle" stroke="#a78bfa" strokeWidth={2} dot={false} isAnimationActive={false} />
               {fullAngleMode ? (
                 <>
@@ -902,18 +888,8 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
                
                <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideBottomLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5 }} />
                <ReferenceLine y={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} />
-
-               {currentPoint && (
-                   <ReferenceDot 
-                       x={currentPoint.xDev} 
-                       y={currentPoint.yHgt} 
-                       r={6} 
-                       fill="#facc15" 
-                       stroke="white" 
-                       strokeWidth={2} 
-                       isAnimationActive={false} // 確保不產生漂移殘影
-                   />
-               )}
+               
+               {/* Marker rendered dynamically by Canvas overlay */}
                
                <Scatter 
                    name="Bar Path" 
