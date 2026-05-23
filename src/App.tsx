@@ -520,7 +520,7 @@ const App = () => {
                                 e.currentTarget.blur();
                             }
                         }}
-                        className="bg-zinc-900 text-yellow-500 text-[16px] md:text-sm font-mono font-bold w-16 outline-none text-center placeholder:text-zinc-700 border border-zinc-700 hover:border-yellow-500 focus:border-yellow-500 hover:bg-zinc-800 focus:bg-zinc-800 cursor-text transition-all px-2 py-1 rounded shadow-inner"
+                        className="bg-zinc-900 text-yellow-500 text-[16px] md:text-sm font-mono font-bold w-[69px] outline-none text-center placeholder:text-zinc-700 border border-zinc-700 hover:border-yellow-500 focus:border-yellow-500 hover:bg-zinc-800 focus:bg-zinc-800 cursor-text transition-all px-2 py-1 rounded shadow-inner"
                     />
                     <span className="text-[9px] text-zinc-500 font-bold ml-1.5">kg</span>
                 </div>
@@ -554,7 +554,7 @@ const App = () => {
                                 e.currentTarget.blur();
                             }
                         }}
-                        className="bg-zinc-900 text-blue-400 text-[16px] md:text-sm font-mono font-bold w-16 outline-none text-center placeholder:text-zinc-700 border border-zinc-700 hover:border-blue-400 focus:border-blue-400 hover:bg-zinc-800 focus:bg-zinc-800 cursor-text transition-all px-2 py-1 rounded shadow-inner"
+                        className="bg-zinc-900 text-blue-400 text-[16px] md:text-sm font-mono font-bold w-[69px] outline-none text-center placeholder:text-zinc-700 border border-zinc-700 hover:border-blue-400 focus:border-blue-400 hover:bg-zinc-800 focus:bg-zinc-800 cursor-text transition-all px-2 py-1 rounded shadow-inner"
                     />
                     <span className="text-[9px] text-zinc-500 font-bold ml-1.5">cm</span>
                 </div>
@@ -643,7 +643,7 @@ const App = () => {
                                   e.currentTarget.blur();
                               }
                           }}
-                          className="w-16 bg-transparent text-yellow-500 text-[16px] md:text-sm text-center outline-none font-mono font-bold"
+                          className="w-[69px] bg-transparent text-yellow-500 text-[16px] md:text-sm text-center outline-none font-mono font-bold"
                        />
                        <span className="text-[9px] text-zinc-500 font-bold ml-1">kg</span>
                     </div>
@@ -669,7 +669,7 @@ const App = () => {
                                   e.currentTarget.blur();
                               }
                           }}
-                          className="w-16 bg-transparent text-blue-400 text-[16px] md:text-sm text-center outline-none font-mono font-bold placeholder:text-zinc-600"
+                          className="w-[69px] bg-transparent text-blue-400 text-[16px] md:text-sm text-center outline-none font-mono font-bold placeholder:text-zinc-600"
                        />
                        <span className="text-[9px] text-zinc-500 font-bold ml-1">cm</span>
                     </div>

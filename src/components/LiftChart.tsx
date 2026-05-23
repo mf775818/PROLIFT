@@ -1,6 +1,7 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { OnsetDetectorHPC } from '../lib/hpc/OnsetDetectorHPC';
+import { HpcChartOverlay } from './HpcChartOverlay';
 import {
   LineChart,
   Line,
@@ -39,7 +40,7 @@ interface ProcessedLiftMetrics extends LiftMetrics {
 
 type ChartMode = 'kinematics' | 'kinetics' | 'trajectory' | 'power' | 'angles';
 
-export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbellMass, onCursorMove, onSeekToTime }) => {
+export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTime, barbellMass, onCursorMove, onSeekToTime }) => {
   const [mode, setMode] = useState<ChartMode>('kinematics');
   const [fullAngleMode, setFullAngleMode] = useState(false);
   
@@ -141,15 +142,17 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
 
       // 訂閱瀏覽器原生尺寸變更事件 (非輪詢迴圈)
       const resizeObserver = new ResizeObserver(() => {
-          // 只要事件還在連續觸發(例如使用者正在拖拉)，就取消上一次的重繪排程
-          if (debounceTimerRef.current) {
-              window.clearTimeout(debounceTimerRef.current);
-          }
-          
-          // 只有當使用者「停止拖拉」超過 150 毫秒後，才派發唯一一次的更新信號
-          debounceTimerRef.current = window.setTimeout(() => {
-              setResizeTick(Date.now());
-          }, 150);
+          window.requestAnimationFrame(() => {
+              // 只要事件還在連續觸發(例如使用者正在拖拉)，就取消上一次的重繪排程
+              if (debounceTimerRef.current) {
+                  window.clearTimeout(debounceTimerRef.current);
+              }
+              
+              // 只有當使用者「停止拖拉」超過 150 毫秒後，才派發唯一一次的更新信號
+              debounceTimerRef.current = window.setTimeout(() => {
+                  setResizeTick(Date.now());
+              }, 150);
+          });
       });
 
       resizeObserver.observe(chartContainerRef.current);
@@ -546,9 +549,22 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       if (!processedData || processedData.length === 0) return null;
       // 使用絕對時間進行匹配
       const relativeCurrent = currentTime - startTimeVal;
-      return processedData.reduce((prev, curr) => 
-        Math.abs(curr.timeVal - relativeCurrent) < Math.abs(prev.timeVal - relativeCurrent) ? curr : prev
-      );
+      let closestIdx = 0, l = 0, r = processedData.length - 1;
+      while (l <= r) {
+          const m = (l + r) >> 1;
+          if (processedData[m].timeVal <= relativeCurrent) { closestIdx = m; l = m + 1; }
+          else r = m - 1;
+      }
+      
+      // Check the closestIdx and the one right after it to find the absolute closest
+      let closest = processedData[closestIdx];
+      if (closestIdx + 1 < processedData.length) {
+          const next = processedData[closestIdx + 1];
+          if (Math.abs(next.timeVal - relativeCurrent) < Math.abs(closest.timeVal - relativeCurrent)) {
+              closest = next;
+          }
+      }
+      return closest;
   }, [processedData, currentTime, startTimeVal]);
 
   if (!data || data.length === 0) {
@@ -682,6 +698,17 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
          onMouseUp={handleEndAction}
          onDoubleClick={handleDoubleClick}
       >
+          {/* 添加 HPC 覆蓋層 */}
+          <HpcChartOverlay
+            containerRef={chartContainerRef}
+            currentTime={currentTime}
+            startTimeVal={startTimeVal}
+            zoomDomain={zoomDomain}
+            processedData={processedData}
+            isVisible={mode !== 'trajectory'}
+            rightMargin={mode === 'power' || mode === 'angles' ? 10 : 35}
+          />
+          
           {/* 將 resizeTick 交給 ResponsiveContainer，只在拖曳結束後讓圖表引擎重新計算一次座標 */}
           <ResponsiveContainer key={`rc-engine-${resizeTick}`} width="100%" height="100%" minWidth={1} minHeight={1}>
           {mode === 'kinematics' ? (
@@ -697,7 +724,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
               <ReferenceLine yAxisId="left" x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
-              <ReferenceLine yAxisId="left" x={currentTime - startTimeVal} stroke="white" strokeDasharray="3 3" opacity={0.5} />
+              
               {currentPoint && (
                   <>
                     <ReferenceDot yAxisId="left" x={currentPoint.timeVal} y={currentPoint.velocity} r={4} fill="#facc15" stroke="white" strokeWidth={2} />
@@ -725,7 +752,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                 cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
               <ReferenceLine yAxisId="left" x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
-              <ReferenceLine yAxisId="left" x={currentTime - startTimeVal} stroke="white" strokeDasharray="3 3" opacity={0.5} />
+              
               {currentPoint && (
                   <>
                     <ReferenceDot yAxisId="left" x={currentPoint.timeVal} y={currentPoint.force} r={4} fill="#ef4444" stroke="white" strokeWidth={2} />
@@ -746,7 +773,7 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  cursor={{ stroke: '#facc15', strokeWidth: 1 }}
               />
               <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
-              <ReferenceLine x={currentTime - startTimeVal} stroke="white" strokeDasharray="3 3" opacity={0.5} />
+              
               {currentPoint && (
                  <ReferenceDot x={currentPoint.timeVal} y={currentPoint.power} r={4} fill="#ef4444" stroke="white" strokeWidth={2} />
               )}
@@ -799,7 +826,6 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
                  }}
               />
               <ReferenceLine x={0} stroke="#22c55e" strokeDasharray="3 3" strokeWidth={1.5} label={{ position: 'insideTopLeft', value: 'start', fill: '#22c55e', fontSize: 10, offset: 5, bg: 'rgba(0,0,0,0.5)' }} />
-              <ReferenceLine x={currentTime - startTimeVal} stroke="white" strokeDasharray="3 3" opacity={0.5} />
               {currentPoint && (
                 <>
                   <ReferenceDot x={currentPoint.timeVal} y={currentPoint.backAngle || 0} r={3} fill="#a78bfa" stroke="none" />
@@ -904,4 +930,10 @@ export const LiftChart: React.FC<LiftChartProps> = ({ data, currentTime, barbell
       </div>
     </div>
   );
-};
+}, (prevProps, nextProps) => {
+  return prevProps.data === nextProps.data && 
+         prevProps.currentTime === nextProps.currentTime &&
+         prevProps.barbellMass === nextProps.barbellMass &&
+         prevProps.onCursorMove === nextProps.onCursorMove &&
+         prevProps.onSeekToTime === nextProps.onSeekToTime;
+});

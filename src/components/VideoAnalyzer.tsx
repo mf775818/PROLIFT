@@ -781,10 +781,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       const t = videoRef.current?.currentTime || 0;
       
       // Find current point to redraw
-      let closestIdx = 0;
-      for (let i = 0; i < metrics.length; i++) {
-        if (parseFloat(metrics[i].time) <= t) closestIdx = i;
-        else break;
+      let closestIdx = 0, l = 0, r = metrics.length - 1;
+      while (l <= r) {
+        const m = (l + r) >> 1;
+        if (parseFloat(metrics[m].time) <= t) { closestIdx = m; l = m + 1; }
+        else r = m - 1;
       }
       drawOverlay(metrics[closestIdx], closestIdx);
     }
@@ -914,7 +915,14 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         } else {
             renderWidth = 0; renderHeight = 0; internalTop = 0; internalLeft = 0;
         }
-        setVideoLayout({ width: renderWidth, height: renderHeight, top: elementOffsetTop + internalTop, left: elementOffsetLeft + internalLeft });
+        setVideoLayout(prev => {
+            const newTop = elementOffsetTop + internalTop;
+            const newLeft = elementOffsetLeft + internalLeft;
+            if (prev.width === renderWidth && prev.height === renderHeight && prev.top === newTop && prev.left === newLeft) {
+                return prev;
+            }
+            return { width: renderWidth, height: renderHeight, top: newTop, left: newLeft };
+        });
     }
   }, [handleCanPlay]);
 
@@ -2711,7 +2719,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       drawOverlay(closest, closestIdx, rawFrame?.landmarks);
 
       const now = performance.now();
-      if (now - lastMetricsUpdateTimeRef.current > 66) {
+      const throttleMs = (videoRef.current && !videoRef.current.paused) ? 33 : 0; // 30 FPS
+      if (now - lastMetricsUpdateTimeRef.current >= throttleMs) {
           onMetricsUpdateRef.current(closest, history);
           lastMetricsUpdateTimeRef.current = now;
       }
@@ -2738,7 +2747,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
   useEffect(() => {
     if (!videoRef.current || !canvasRef.current || !containerRef.current) return;
-    const resizeObserver = new ResizeObserver(() => { updateVideoLayout(); });
+    const resizeObserver = new ResizeObserver(() => { window.requestAnimationFrame(() => updateVideoLayout()); });
     resizeObserver.observe(videoRef.current); if (wrapperRef.current) resizeObserver.observe(wrapperRef.current);
     return () => resizeObserver.disconnect();
   }, [videoUrl, updateVideoLayout]);
@@ -2753,6 +2762,44 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         }
     }
   }, [playbackSpeed, isPlaying]);
+
+  const cleanupMemoryOnRepeat = useCallback(() => {
+    // 1. 清理所有 pending 的 rAF
+    if (rafIdRef.current) {
+      if (videoRef.current && 'cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
+        // @ts-ignore
+        videoRef.current.cancelVideoFrameCallback(rafIdRef.current);
+      } else {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+      rafIdRef.current = null;
+    }
+    
+    // 2. 清理 Canvas 緩衝
+    const pathCtx = pathCanvasRef.current?.getContext('2d');
+    const overlayCtx = canvasRef.current?.getContext('2d');
+    if (pathCtx) pathCtx.clearRect(0, 0, pathCanvasRef.current?.width || 0, pathCanvasRef.current?.height || 0);
+    if (overlayCtx) overlayCtx.clearRect(0, 0, canvasRef.current?.width || 0, canvasRef.current?.height || 0);
+    
+    // 3. 強制 GC hint（現代瀏覽器會智能處理）
+    // @ts-ignore
+    if (typeof window.gc === 'function') {
+      // @ts-ignore
+      window.gc();
+    }
+  }, []);
+
+  // 在視頻結束或重新播放時調用
+  useEffect(() => {
+    if (!isPlaying && videoRef.current?.ended) {
+      cleanupMemoryOnRepeat();
+    }
+    return () => {
+       if (videoRef.current?.ended) {
+          cleanupMemoryOnRepeat();
+       }
+    };
+  }, [isPlaying, cleanupMemoryOnRepeat]);
   
   useEffect(() => {
      const cancelRaf = (id: number) => {
@@ -2803,6 +2850,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       ) : videoUrl ? (
         <div ref={wrapperRef} className="relative w-full h-full flex items-center justify-center bg-black min-h-0 min-w-0">
           <video
+            id="main-video-player"
             ref={videoRef}
             src={videoUrl}
             className={`w-full h-full object-contain block ${analysisState === AnalysisState.ANALYZING || isVideoLoading ? 'opacity-30' : ''}`}
@@ -2817,8 +2865,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             onCanPlay={handleCanPlay}
             onLoadedData={handleCanPlay}
             onPlaying={handleCanPlay}
-            onWaiting={() => console.log("[VideoLoad] Device waiting for data...")}
-            onStalled={() => console.log("[VideoLoad] Video stalled (Decoder busy?)")}
             onLoadedMetadata={updateVideoLayout}
             onPlay={updateVideoLayout} 
             onEnded={() => setIsPlaying(false)}
