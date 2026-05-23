@@ -706,7 +706,8 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
             zoomDomain={zoomDomain}
             processedData={processedData}
             isVisible={mode !== 'trajectory'}
-            rightMargin={mode === 'power' || mode === 'angles' ? 10 : 35}
+            leftMargin={mode === 'kinetics' || mode === 'power' ? 40 : 30} 
+            rightMargin={(mode === 'kinematics' || mode === 'kinetics') ? 65 : 10}
           />
           
           {/* 將 resizeTick 交給 ResponsiveContainer，只在拖曳結束後讓圖表引擎重新計算一次座標 */}
@@ -787,7 +788,7 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
                 stroke="#71717a" 
                 fontSize={10} 
                 width={30} 
-                domain={fullAngleMode ? [0, 180] : ['auto', 'auto']} 
+                domain={fullAngleMode ? [0, 180] : [(dataMin: number) => Math.floor(dataMin - 10), (dataMax: number) => Math.ceil(dataMax + 10)]} 
                 ticks={fullAngleMode ? [0, 45, 90, 135, 180] : undefined} 
                 tickFormatter={(val) => val.toFixed(0)} 
               />
@@ -887,7 +888,7 @@ export const LiftChart = React.memo<React.FC<LiftChartProps>>(({ data, currentTi
                    dataKey="yHgt" 
                    name="Height" 
                    unit="m" 
-                   domain={['auto', 'auto']} 
+                   domain={['dataMin', 'dataMax']} 
                    stroke="#71717a" 
                    fontSize={10} 
                />
