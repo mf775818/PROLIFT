@@ -36,6 +36,7 @@ export const wipeEngineGlobals = () => {
 
 interface VideoAnalyzerProps {
   videoFile: File | null;
+  preloadedUrl?: string;
   onMetricsUpdate: (metrics: LiftMetrics, history: LiftMetrics[]) => void;
   onAnalysisComplete: (allMetrics: LiftMetrics[]) => void;
   onAnalysisStart: () => void;
@@ -681,7 +682,8 @@ class OpenCVTracker {
 }
 
 export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({ 
-  videoFile, 
+  videoFile,
+  preloadedUrl,
   onMetricsUpdate, 
   onAnalysisComplete,
   onAnalysisStart,
@@ -840,46 +842,96 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   }, []);
 
   const handleCanPlay = useCallback(() => {
-      const currentUrl = currentVideoUrlRef.current;
-      if (!currentUrl || currentUrl === lastProcessedUrlRef.current) return;
-      
-      console.log("[VideoLoad] (12/18) handleCanPlay triggered (Video ready to play).");
-      setIsVideoLoading(false);
-      lastProcessedUrlRef.current = currentUrl;
-      
-      if (videoRef.current) {
-          const v = videoRef.current;
-          if (v.currentTime === 0) {
-              v.currentTime = 0.001;
-          }
-          
-          setTimeout(() => {
-              updateVideoLayoutRef.current?.();
-          }, 50);
-          
-          setTimeout(() => {
-              const hiddenVid = processingVideoRef.current;
-              if (hiddenVid && currentUrl && hiddenVid.src !== currentUrl) {
-                  try {
-                      hiddenVid.muted = true;
-                      hiddenVid.playsInline = true;
-                      hiddenVid.crossOrigin = "anonymous";
-                      hiddenVid.preload = "auto";
-                      hiddenVid.onloadedmetadata = () => {
-                          if (hiddenVid.videoWidth === 0) return;
-                      };
-                      hiddenVid.onloadeddata = () => {
-                          if (hiddenVid.currentTime === 0) hiddenVid.currentTime = 0.001;
-                      };
-                      hiddenVid.onerror = (e) => {
-                          if (!hiddenVid.src) return;
-                      };
-                      hiddenVid.src = currentUrl;
-                      hiddenVid.load();
-                  } catch (e) {}
-              }
-          }, 300);
-      }
+    const currentUrl = currentVideoUrlRef.current;
+    if (!currentUrl || currentUrl === lastProcessedUrlRef.current) return;
+
+    const v = videoRef.current;
+    if (!v) return;
+
+    // 【防禦機制 1】動態黑畫面偵測引擎：讀取像素並評估 GPU 紋理狀態
+    const verifyVideoFrame = (video: HTMLVideoElement): boolean => {
+        if (video.videoWidth === 0 || video.videoHeight === 0) return false;
+        try {
+            const cvs = document.createElement('canvas');
+            cvs.width = 16; cvs.height = 16;
+            const ctx = cvs.getContext('2d', { willReadFrequently: true, alpha: false });
+            if (!ctx) return true;
+            ctx.drawImage(video, 0, 0, 16, 16);
+            const data = ctx.getImageData(0, 0, 16, 16).data;
+            
+            let isBlank = true;
+            for (let i = 0; i < data.length; i += 4) {
+                // 移動端死鎖時，RGBA 會完美呈現 0,0,0
+                if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) {
+                    isBlank = false;
+                    break;
+                }
+            }
+            return !isBlank;
+        } catch (e) {
+            // CORS 阻擋等例外情況，放行以避免死鎖
+            return true; 
+        }
+    };
+
+    const attemptWarmup = () => {
+        let retries = 0;
+        const maxRetries = 25;
+
+        const checkAndNudge = () => {
+            if (!videoRef.current || currentUrl !== currentVideoUrlRef.current) return;
+            
+            // 【防禦機制 2】多層級檢查與微步前進
+            if (v.readyState >= 2 && v.videoWidth > 0 && verifyVideoFrame(v)) {
+                console.log(`[VideoLoad] Frame safely resolved after ${retries} initialization retries.`);
+                finalizePlay();
+            } else if (retries >= maxRetries) {
+                console.warn("[VideoLoad] Max warmup retries exceeded. Forcing initialization regardless of frame state.");
+                finalizePlay();
+            } else {
+                retries++;
+                // 每次微幅推動 2 毫秒，強制底層媒體引擎處理關鍵幀
+                v.currentTime = 0.001 + (retries * 0.002);
+                
+                if ('requestVideoFrameCallback' in v) {
+                    (v as any).requestVideoFrameCallback(checkAndNudge);
+                } else {
+                    setTimeout(checkAndNudge, 50);
+                }
+            }
+        };
+
+        v.pause();
+        checkAndNudge();
+    };
+
+    const finalizePlay = () => {
+        if (currentUrl !== currentVideoUrlRef.current) return;
+        setIsVideoLoading(false);
+        lastProcessedUrlRef.current = currentUrl;
+        
+        setTimeout(() => { updateVideoLayoutRef.current?.(); }, 50);
+        
+        setTimeout(() => {
+            const hiddenVid = processingVideoRef.current;
+            if (hiddenVid && currentUrl && hiddenVid.src !== currentUrl) {
+                try {
+                    // 【防禦機制 3】確保背景分析影片具備同等的嚴格權限配置
+                    hiddenVid.muted = true;
+                    hiddenVid.playsInline = true;
+                    hiddenVid.crossOrigin = "anonymous";
+                    hiddenVid.preload = "auto";
+                    hiddenVid.onloadeddata = () => {
+                        if (hiddenVid.currentTime === 0) hiddenVid.currentTime = 0.001;
+                    };
+                    hiddenVid.src = currentUrl;
+                    hiddenVid.load();
+                } catch (e) {}
+            }
+        }, 300);
+    };
+
+    attemptWarmup();
   }, []);
 
   const updateVideoLayout = useCallback(() => {
@@ -965,6 +1017,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
   const handleInternalUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
       console.log("[VideoLoad] (1/18) User selected a new file through internal upload input.");
+
       if (e.target.files && e.target.files[0] && onFileSelect) {
           onFileSelect(e.target.files[0]);
           e.target.value = '';
@@ -1143,16 +1196,12 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
       console.log(`[VideoLoad] (4/18) Browser Check -> Type: ${videoFile.type}, HEVC: ${isHEVC}, Mobile: ${isMobile}`);
 
-      console.log("[VideoLoad] (5/18) Creating Blob URL...");
-      prepareVideoFile(videoFile).then(url => {
+      const startVideoLoad = (url: string) => {
           console.log("[VideoLoad] (6/18) Blob URL ready.");
           objectUrl = url;
           
-          // --- INDUSTRIAL PREROLL STRATEGY ---
-          // On mobile HEVC, we sometimes need to "prime" the decoder pipeline with a simple state
           if (isHEVC && isMobile && videoRef.current) {
               console.log("[VideoLoad] (7/18) [PREROLL] Priming HEVC decoder for mobile...");
-              // We don't actually need a separate file, just ensure the element is clean and ready.
               videoRef.current.muted = true;
               videoRef.current.playsInline = true;
           }
@@ -1161,7 +1210,18 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           currentVideoUrlRef.current = url;
           setVideoUrl(url);
 
-          // INDUSTRIAL WATCHDOG: THE HEVC KICKSTART
+          if (videoRef.current) {
+              try {
+                  if (videoRef.current.src !== url && !videoRef.current.src.endsWith(url)) {
+                      videoRef.current.src = url;
+                      videoRef.current.load();
+                      console.log("[VideoLoad] (9/18) Sent synchronous AVFoundation load command.");
+                  } else {
+                      console.log("[VideoLoad] (9/18) AVFoundation load command bypassed (already loaded synchronously).");
+                  }
+              } catch (err) {}
+          }
+
           setTimeout(() => {
               if (videoRef.current && isVideoLoading && !lastProcessedUrlRef.current) {
                   console.log("[VideoLoad] [WATCHDOG] Decoder hang detected (3s timeout). Attempting force-wake...");
@@ -1170,7 +1230,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                   v.muted = true;
                   v.playsInline = true;
                   
-                  // Force a metadata update if the browser is lazy
                   if (v.readyState === 0 && v.src) {
                       console.log("[VideoLoad] [WATCHDOG] readyState is 0. Re-loading...");
                       v.load();
@@ -1189,7 +1248,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                           if (v.videoWidth > 0) {
                              handleCanPlay();
                           } else {
-                             updateVideoLayout(); // This will trigger the 0x0 retry logic
+                             updateVideoLayout(); 
                           }
                       });
                   } else {
@@ -1198,17 +1257,29 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                   }
               }
           }, 3500);
-      }).catch(err => {
-          console.error("[VideoLoad] CRITICAL ERROR:", err);
-          setVideoError("Could not load video.");
-          setIsVideoLoading(false);
-      });
+      };
+
+      if (preloadedUrl) {
+          console.log("[VideoLoad] (5/18) Using preloaded URL from App.tsx.");
+          startVideoLoad(preloadedUrl);
+      } else {
+          console.log("[VideoLoad] (5/18) Creating Blob URL...");
+          prepareVideoFile(videoFile).then(url => {
+              startVideoLoad(url);
+          }).catch(err => {
+              console.error("[VideoLoad] CRITICAL ERROR:", err);
+              setVideoError("Could not load video.");
+              setIsVideoLoading(false);
+          });
+      }
 
       return () => { 
-          if (objectUrl) URL.revokeObjectURL(objectUrl); 
+          if (objectUrl && !preloadedUrl) {
+              URL.revokeObjectURL(objectUrl);
+          }
       };
     }
-  }, [videoFile, poseModel, handleCanPlay, updateVideoLayout]);
+  }, [videoFile, preloadedUrl, poseModel, handleCanPlay, updateVideoLayout]);
 
   // --- INDUSTRIAL KEYBOARD CONTROLS ---
 
@@ -2881,8 +2952,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
   return (
     <div ref={containerRef} className="relative w-full h-full flex items-center justify-center bg-zinc-950 p-0 overflow-hidden select-none group min-h-0 min-w-0">
-      {videoError ? (
-         <div className="text-center p-6 bg-zinc-900 rounded-xl border border-red-900/50">
+      {videoError && (
+         <div className="absolute inset-x-0 inset-y-0 z-50 text-center flex flex-col justify-center items-center p-6 bg-zinc-900 border-4 border-red-900/50">
              <div className="text-red-500 font-bold mb-2">Video Error</div>
              <p className="text-zinc-400 text-xs mb-4">{videoError}</p>
              <label className="bg-red-600/20 text-red-400 hover:bg-red-600/30 px-4 py-2 rounded cursor-pointer text-xs font-bold border border-red-600/50 transition-colors">
@@ -2890,41 +2961,47 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                  <input type="file" accept="video/mp4,video/quicktime,video/*" className="hidden" onChange={handleInternalUpload} />
              </label>
          </div>
-      ) : videoUrl ? (
-        <div ref={wrapperRef} className="relative w-full h-full flex items-center justify-center bg-black min-h-0 min-w-0">
-          <video
-            id="main-video-player"
-            ref={videoRef}
-            src={videoUrl}
-            className={`w-full h-full object-contain block ${analysisState === AnalysisState.ANALYZING || isVideoLoading ? 'opacity-30' : ''}`}
-            style={{ transform: 'translateZ(0)', willChange: 'transform' }}
-            // Remove default controls to use custom industrial controls
-            controls={false}
-            muted={isMuted}
-            playsInline
-            preload="auto"
-            onTimeUpdate={handleTimeUpdate}
-            onError={handleVideoError}
-            onCanPlay={handleCanPlay}
-            onLoadedData={handleCanPlay}
-            onPlaying={handleCanPlay}
-            onLoadedMetadata={updateVideoLayout}
-            onPlay={updateVideoLayout} 
-            onEnded={() => setIsPlaying(false)}
-            crossOrigin="anonymous"
-          />
-          {isVideoLoading && (
-             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-zinc-950/80 z-50 rounded-lg backdrop-blur-sm pointer-events-none">
-                 <div className="w-12 h-12 border-4 border-zinc-600 border-t-yellow-500 rounded-full animate-spin"></div>
-                 <p className="text-yellow-500 font-bold text-xs tracking-widest animate-pulse border border-yellow-500/50 bg-black/50 px-3 py-1 rounded">INITIALIZING DECODER</p>
-             </div>
-          )}
-          
-          <canvas ref={pathCanvasRef} className="absolute pointer-events-none z-10" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, transform: 'translateZ(0)', willChange: 'transform' }} width={videoLayout.width} height={videoLayout.height} />
-          <canvas ref={canvasRef} className="absolute pointer-events-none z-20" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, transform: 'translateZ(0)', willChange: 'transform' }} width={videoLayout.width} height={videoLayout.height} />
+      )}
 
-          {shouldShowInteractionArea && (
-              <div 
+      {/* Persistent Video Wrapper - CRITICAL for iOS HEVC hardware decode unlocking */}
+      <div 
+        ref={wrapperRef} 
+        className={`relative w-full h-full flex items-center justify-center bg-black min-h-0 min-w-0 transition-opacity duration-300 ${(!videoUrl || videoError) ? 'opacity-0 pointer-events-none absolute inset-0' : 'opacity-100'}`}
+      >
+        <video
+          id="main-video-player"
+          ref={videoRef}
+          src={videoUrl || undefined}
+          className={`w-full h-full object-contain block ${analysisState === AnalysisState.ANALYZING || isVideoLoading ? 'opacity-30' : ''}`}
+          style={{ transform: 'translateZ(0)', willChange: 'transform' }}
+          controls={false}
+          muted={isMuted}
+          playsInline
+          preload="auto"
+          onTimeUpdate={handleTimeUpdate}
+          onError={handleVideoError}
+          onCanPlay={handleCanPlay}
+          onLoadedData={handleCanPlay}
+          onPlaying={handleCanPlay}
+          onLoadedMetadata={updateVideoLayout}
+          onPlay={updateVideoLayout} 
+          onEnded={() => setIsPlaying(false)}
+          crossOrigin="anonymous"
+        />
+
+        {isVideoLoading && (
+           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-zinc-950/80 z-50 rounded-lg backdrop-blur-sm pointer-events-none">
+               <div className="w-12 h-12 border-4 border-zinc-600 border-t-yellow-500 rounded-full animate-spin"></div>
+               <p className="text-yellow-500 font-bold text-xs tracking-widest animate-pulse border border-yellow-500/50 bg-black/50 px-3 py-1 rounded">INITIALIZING DECODER</p>
+           </div>
+        )}
+          
+        <canvas ref={pathCanvasRef} className="absolute pointer-events-none z-10" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, transform: 'translateZ(0)', willChange: 'transform' }} width={videoLayout.width} height={videoLayout.height} />
+        <canvas ref={canvasRef} className="absolute pointer-events-none z-20" style={{ top: videoLayout.top, left: videoLayout.left, width: videoLayout.width, height: videoLayout.height, transform: 'translateZ(0)', willChange: 'transform' }} width={videoLayout.width} height={videoLayout.height} />
+
+        {shouldShowInteractionArea && (
+            <div 
+
                  className={`absolute z-10 ${interactionCursorClass}`}
                  style={{ width: videoLayout.width, height: videoLayout.height, top: videoLayout.top, left: videoLayout.left, pointerEvents: (isSelectingROI || isSelectingDLT) ? 'auto' : 'none' }}
                  onMouseDown={handlePointerDown} onMouseMove={handlePointerMove} onMouseUp={handlePointerUp} onMouseLeave={handlePointerUp}
@@ -3453,28 +3530,32 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           )}
 
         </div>
-      ) : isVideoLoading ? (
-        <div className="flex flex-col items-center justify-center gap-4">
-            <div className="w-12 h-12 border-4 border-zinc-600 border-t-yellow-500 rounded-full animate-spin"></div>
-            <p className="text-zinc-400 text-sm animate-pulse tracking-widest">PREPARING MEDIA...</p>
-        </div>
-      ) : (
-        <label className="flex flex-col items-center justify-center w-full h-full cursor-pointer hover:bg-zinc-900/50 transition-colors group">
-            <div className="w-20 h-20 bg-zinc-900 rounded-full flex items-center justify-center border border-zinc-800 group-hover:scale-110 transition-transform shadow-xl">
-                 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400 group-hover:text-yellow-400"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            </div>
-            <div className="mt-4 text-center">
-                <span className="block text-sm font-bold text-zinc-300 group-hover:text-white tracking-wide">TAP TO UPLOAD VIDEO</span>
-                <span className="block text-[10px] text-zinc-600 mt-1 uppercase font-bold">Supports iOS .MOV & MP4</span>
-            </div>
-            <input 
-                type="file" 
-                accept="video/mp4,video/quicktime,video/*" 
-                className="hidden" 
-                onChange={handleInternalUpload}
-            />
-        </label>
-      )}
+
+        {/* --- UPLOAD AND LOADING PLACEHOLDERS FOR CLEAN STATE --- */}
+        {!videoUrl && !isVideoLoading && !videoError && (
+          <label className="absolute inset-0 z-30 flex flex-col items-center justify-center w-full h-full cursor-pointer hover:bg-zinc-900/50 transition-colors group bg-zinc-950">
+              <div className="w-20 h-20 bg-zinc-900 rounded-full flex items-center justify-center border border-zinc-800 group-hover:scale-110 transition-transform shadow-xl">
+                   <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400 group-hover:text-yellow-400"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              </div>
+              <div className="mt-4 text-center">
+                  <span className="block text-sm font-bold text-zinc-300 group-hover:text-white tracking-wide">TAP TO UPLOAD VIDEO</span>
+                  <span className="block text-[10px] text-zinc-600 mt-1 uppercase font-bold">Supports iOS .MOV & MP4</span>
+              </div>
+              <input 
+                  type="file" 
+                  accept="video/mp4,video/quicktime,video/*" 
+                  className="hidden" 
+                  onChange={handleInternalUpload}
+              />
+          </label>
+        )}
+
+        {!videoUrl && isVideoLoading && !videoError && (
+          <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 bg-zinc-950 pointer-events-none">
+              <div className="w-12 h-12 border-4 border-zinc-600 border-t-yellow-500 rounded-full animate-spin"></div>
+              <p className="text-zinc-400 text-sm animate-pulse tracking-widest">PREPARING MEDIA...</p>
+          </div>
+        )}
     </div>
   );
 });

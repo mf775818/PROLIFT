@@ -84,6 +84,7 @@ const StatBox = ({ id, label, valAvg, valL, valR, unit, subColor = "text-zinc-60
 
 const App = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [preloadedUrl, setPreloadedUrl] = useState<string | undefined>(undefined);
   
   const [liveMetrics, setLiveMetrics] = useState<LiftMetrics>({ time: '0', velocity: 0, height: 0, power: 0, x: 0, y: 0, kneeAngle: 0, hipAngle: 0, ankleAngle: 0, backAngle: 0 });
   const liveMetricsRef = useRef<LiftMetrics>(liveMetrics);
@@ -279,6 +280,31 @@ const App = () => {
 
   // Unified File Handler
   const processFile = useCallback((file: File) => {
+      console.log("[App] File selected, triggering synchronous AVFoundation unlock.");
+      
+      const newUrl = URL.createObjectURL(file);
+      
+      // Clean up previous URL if it exists
+      setPreloadedUrl(prev => {
+          if (prev) URL.revokeObjectURL(prev);
+          return newUrl;
+      });
+      
+      const v = document.getElementById('main-video-player') as HTMLVideoElement;
+      if (v) {
+          try {
+              v.muted = true;
+              v.playsInline = true;
+              v.src = newUrl;
+              v.load();
+              const p = v.play();
+              if (p !== undefined) {
+                  p.catch(()=>{}).finally(()=>{ v.pause(); });
+              }
+              console.log("[App] Synchronous unlock command sent to video element.");
+          } catch(e) {}
+      }
+
       setVideoFile(file);
       handleReset();
   }, [handleReset]);
@@ -601,7 +627,8 @@ const App = () => {
             }}
         >
            <VideoAnalyzer 
-             videoFile={videoFile} 
+             videoFile={videoFile}
+             preloadedUrl={preloadedUrl}
              onMetricsUpdate={handleMetricsUpdate}
              onAnalysisComplete={handleAnalysisComplete}
              onAnalysisStart={handleAnalysisStart}
