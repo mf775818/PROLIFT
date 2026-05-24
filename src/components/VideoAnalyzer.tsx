@@ -108,19 +108,21 @@ const MagnifierLens: React.FC<{
       const vH = video.videoHeight;
       if (vW === 0 || vH === 0) return;
 
-      const sourceSize = size / zoom;
-      const sourceX = x * vW - sourceSize / 2;
-      const sourceY = y * vH - sourceSize / 2;
-
       ctx.imageSmoothingEnabled = false;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, size, size);
       
-      ctx.drawImage(
-        video,
-        sourceX, sourceY, sourceSize, sourceSize,
-        0, 0, size, size
-      );
+      const targetX = x * vW;
+      const targetY = y * vH;
+
+      ctx.save();
+      // Center canvas coordinates to exactly the middle reticle
+      ctx.translate(size / 2, size / 2);
+      // Scale by zoom
+      ctx.scale(zoom, zoom);
+      // Draw video such that targetX,targetY is located exactly at 0,0 locally
+      ctx.drawImage(video, -targetX, -targetY, vW, vH);
+      ctx.restore();
 
       // Precision Reticle
       ctx.strokeStyle = '#facc15';
@@ -1212,11 +1214,24 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
   useLayoutEffect(() => {
     window.addEventListener('resize', updateVideoLayout);
-    return () => window.removeEventListener('resize', updateVideoLayout);
+    
+    // Add ResizeObserver for wrapper to handle layout shifts flawlessly
+    const wrapper = wrapperRef.current;
+    let resizeObserver: ResizeObserver | null = null;
+    if (wrapper) {
+      resizeObserver = new ResizeObserver(() => {
+        if (updateVideoLayoutRef.current) updateVideoLayoutRef.current();
+      });
+      resizeObserver.observe(wrapper);
+    }
+    
+    return () => {
+        window.removeEventListener('resize', updateVideoLayout);
+        if (resizeObserver && wrapper) resizeObserver.disconnect();
+    };
   }, [updateVideoLayout]);
   
   const getCoordinates = (e: React.MouseEvent | React.TouchEvent) => {
-      const bounds = e.currentTarget.getBoundingClientRect();
       let clientX, clientY;
       if ('touches' in e) {
           clientX = e.touches[0].clientX;
@@ -1225,9 +1240,37 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           clientX = (e as React.MouseEvent).clientX;
           clientY = (e as React.MouseEvent).clientY;
       }
+
+      // Calculate perfect live bounds independent of state to guarantee 0 offset deviation
+      const video = videoRef.current;
+      const wrapper = wrapperRef.current;
+      if (!video || !wrapper) return { x: 0, y: 0 };
+
+      const videoRect = video.getBoundingClientRect();
+      const videoRatio = video.videoWidth / video.videoHeight;
+      const elementRatio = videoRect.width / videoRect.height;
+      let renderWidth = 0, renderHeight = 0, internalTop = 0, internalLeft = 0;
+
+      if (videoRect.width > 0 && videoRect.height > 0 && video.videoWidth > 0) {
+          if (elementRatio > videoRatio) {
+              renderHeight = videoRect.height;
+              renderWidth = renderHeight * videoRatio;
+              internalTop = 0;
+              internalLeft = (videoRect.width - renderWidth) / 2;
+          } else {
+              renderWidth = videoRect.width;
+              renderHeight = renderWidth / videoRatio;
+              internalLeft = 0;
+              internalTop = (videoRect.height - renderHeight) / 2;
+          }
+      }
+
+      const actualVideoLeft = videoRect.left + internalLeft;
+      const actualVideoTop = videoRect.top + internalTop;
+
       return {
-          x: clamp((clientX - bounds.left) / bounds.width, 0, 1),
-          y: clamp((clientY - bounds.top) / bounds.height, 0, 1)
+          x: clamp((clientX - actualVideoLeft) / renderWidth, 0, 1),
+          y: clamp((clientY - actualVideoTop) / renderHeight, 0, 1)
       };
   };
 
