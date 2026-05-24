@@ -415,6 +415,8 @@ export const LiftChart: React.FC<LiftChartProps> = React.memo(({ data, currentTi
           dragStartRef.current.max = newMax;
           dragStartRef.current.pinchDist = pinchDist; 
       } else {
+          if (!zoomDomain) return; // Do not pan (or trigger reset zoom button) if not expanded
+
           const dx = coords.x - dragStartRef.current.x;
           if (Math.abs(dx) > 5) {
               dragStartRef.current.moved = true;
@@ -702,7 +704,7 @@ export const LiftChart: React.FC<LiftChartProps> = React.memo(({ data, currentTi
       {/* 絕對不要在這裡加 key，保護所有的滑鼠交互事件 (onPointerDown 等) 不被銷毀 */}
       <div 
          ref={chartContainerRef}
-         className={`flex-1 w-full min-h-0 relative ${zoomDomain ? 'cursor-ew-resize' : 'cursor-pointer'} touch-none`}
+         className={`flex-1 w-full min-h-0 relative ${zoomDomain ? 'cursor-ew-resize' : 'cursor-pointer'} touch-none select-none`}
          onMouseLeave={() => { onCursorMove && onCursorMove(null); handleEndAction(); }}
          onWheel={handleWheel}
          onTouchStart={handleTouchStart}

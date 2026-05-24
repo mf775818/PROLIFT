@@ -1910,7 +1910,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     // Eliminate landmark noise/jump offsets before processing further
     cleanSkeletonData(raw);
 
-    const canvasW = processingVideoRef.current.videoWidth; const canvasH = processingVideoRef.current.videoHeight;
+    const canvasW = videoRef.current?.videoWidth || 1920; 
+    const canvasH = videoRef.current?.videoHeight || 1080;
     if (normalizedROI && normalizedROI.height > 0) {
         // Evaluate the plate's vertical diameter directly against processing canvas constraints
         const platePixelHeight = normalizedROI.height * canvasH;
@@ -2334,19 +2335,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const pathCtx = pathCanvasRef.current?.getContext('2d');
     if (pathCtx && pathCanvasRef.current) pathCtx.clearRect(0,0, pathCanvasRef.current.width, pathCanvasRef.current.height);
     
-    if (videoRef.current) {
-        try {
-            if (videoRef.current.readyState >= 1) {
-                // 將 0 改為 0.01 避免 iOS 視為無效值
-                videoRef.current.currentTime = 0.01; 
-            }
-            videoRef.current.playbackRate = playbackSpeed;
-        } catch (e) {
-            console.warn("Could not init playback state: ", e);
-        }
-    }
-    
-    // 🔥 Fix 1: 清除 Live Preview 的綠色骨架殘影
+    // 🔥 1. 清除 Live Preview 的綠色骨架殘影
     const overlayCanvas = canvasRef.current;
     const overlayCtx = overlayCanvas?.getContext('2d');
     if (overlayCanvas && overlayCtx) {
@@ -2357,8 +2346,47 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     onAnalysisCompleteRef.current(metrics);
     onMetricsUpdateRef.current(metrics[0], metrics);
 
-    // 🔥 手動補畫第一幀的乾淨 UI（只顯示追蹤點與數據，不顯示骨架）
-    drawOverlay(metrics[0], 0);
+    // === 🐒C++++ 工業級解碼器交接協議 (Hardware Decoder Handoff) ===
+    
+    // 🔥 2. 釋放隱藏影片對 iOS HEVC 硬體解碼管線的壟斷
+    if (processingVideoRef.current) {
+        const hiddenVid = processingVideoRef.current;
+        hiddenVid.pause();
+        hiddenVid.removeAttribute('src'); // 拔除媒體源
+        hiddenVid.load(); // 徹底清空 CoreMedia 管線與記憶體駐留
+    }
+
+    // 🔥 3. 強制喚醒主播放器並奪回硬體解碼器
+    if (videoRef.current) {
+        try {
+            const v = videoRef.current;
+            v.playbackRate = playbackSpeed;
+            if (v.readyState >= 1) {
+                v.currentTime = 0.01; 
+            }
+            
+            // 透過微小的播放動作 (Play -> Pause) 刺激 CoreMedia 重新綁定渲染層與 Canvas 同步機制
+            const playPromise = v.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    v.pause();
+                    drawOverlay(metrics[0], 0); // 確保硬體解碼成功後，精準繪製第一幀軌跡
+                }).catch(() => {
+                    // 即使 Auto-play 策略阻擋，解碼器也已經被喚醒
+                    v.pause();
+                    drawOverlay(metrics[0], 0);
+                });
+            } else {
+                v.pause();
+                drawOverlay(metrics[0], 0);
+            }
+        } catch (e) {
+            console.warn("Playback init error: ", e);
+            drawOverlay(metrics[0], 0);
+        }
+    } else {
+        drawOverlay(metrics[0], 0);
+    }
   };
 
   const rafIdRef = useRef<number | null>(null);
@@ -3111,8 +3139,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                                   {(() => {
                                       const divs = 10;
                                       const res = [];
-                                      const vW = processingVideoRef.current.videoWidth || videoLayout.width;
-                                      const vH = processingVideoRef.current.videoHeight || videoLayout.height;
+                                      const vW = videoRef.current?.videoWidth || videoLayout.width;
+                                      const vH = videoRef.current?.videoHeight || videoLayout.height;
 
                                       if (dltPoints.length === 4) {
                                           const srcPts = [
@@ -3272,8 +3300,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                                       setIsSelectingDLT(false);
                                       
                                       // Calculate preview matrices immediately
-                                      const vW = processingVideoRef.current.videoWidth || videoLayout.width;
-                                      const vH = processingVideoRef.current.videoHeight || videoLayout.height;
+                                      const vW = videoRef.current?.videoWidth || videoLayout.width;
+                                      const vH = videoRef.current?.videoHeight || videoLayout.height;
                                       const srcPts = [
                                           dltPoints[0].x * vW, dltPoints[0].y * vH,
                                           dltPoints[1].x * vW, dltPoints[1].y * vH,
