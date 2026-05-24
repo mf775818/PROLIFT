@@ -848,7 +848,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     const v = videoRef.current;
     if (!v) return;
 
-    // 【防禦機制 1】動態黑畫面偵測引擎：讀取像素並評估 GPU 紋理狀態
     const verifyVideoFrame = (video: HTMLVideoElement): boolean => {
         if (video.videoWidth === 0 || video.videoHeight === 0) return false;
         try {
@@ -858,79 +857,60 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             if (!ctx) return true;
             ctx.drawImage(video, 0, 0, 16, 16);
             const data = ctx.getImageData(0, 0, 16, 16).data;
-            
-            let isBlank = true;
             for (let i = 0; i < data.length; i += 4) {
-                // 移動端死鎖時，RGBA 會完美呈現 0,0,0
-                if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) {
-                    isBlank = false;
-                    break;
-                }
+                if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) return true;
             }
-            return !isBlank;
+            return false;
         } catch (e) {
-            // CORS 阻擋等例外情況，放行以避免死鎖
             return true; 
         }
-    };
-
-    const attemptWarmup = () => {
-        let retries = 0;
-        const maxRetries = 25;
-
-        const checkAndNudge = () => {
-            if (!videoRef.current || currentUrl !== currentVideoUrlRef.current) return;
-            
-            // 【防禦機制 2】多層級檢查與微步前進
-            if (v.readyState >= 2 && v.videoWidth > 0 && verifyVideoFrame(v)) {
-                console.log(`[VideoLoad] Frame safely resolved after ${retries} initialization retries.`);
-                finalizePlay();
-            } else if (retries >= maxRetries) {
-                console.warn("[VideoLoad] Max warmup retries exceeded. Forcing initialization regardless of frame state.");
-                finalizePlay();
-            } else {
-                retries++;
-                // 每次微幅推動 2 毫秒，強制底層媒體引擎處理關鍵幀
-                v.currentTime = 0.001 + (retries * 0.002);
-                
-                if ('requestVideoFrameCallback' in v) {
-                    (v as any).requestVideoFrameCallback(checkAndNudge);
-                } else {
-                    setTimeout(checkAndNudge, 50);
-                }
-            }
-        };
-
-        v.pause();
-        checkAndNudge();
     };
 
     const finalizePlay = () => {
         if (currentUrl !== currentVideoUrlRef.current) return;
         setIsVideoLoading(false);
         lastProcessedUrlRef.current = currentUrl;
-        
         setTimeout(() => { updateVideoLayoutRef.current?.(); }, 50);
-        
-        setTimeout(() => {
-            const hiddenVid = processingVideoRef.current;
-            if (hiddenVid && currentUrl && hiddenVid.src !== currentUrl) {
-                try {
-                    // 【防禦機制 3】確保背景分析影片具備同等的嚴格權限配置
-                    hiddenVid.muted = true;
-                    hiddenVid.playsInline = true;
-                    hiddenVid.crossOrigin = "anonymous";
-                    hiddenVid.preload = "auto";
-                    hiddenVid.onloadeddata = () => {
-                        if (hiddenVid.currentTime === 0) hiddenVid.currentTime = 0.001;
-                    };
-                    hiddenVid.src = currentUrl;
-                    hiddenVid.load();
-                } catch (e) {}
-            }
-        }, 300);
+        // 🚨 移除此處提早加載 processingVideoRef 的邏輯，避免 HEVC 硬體解碼器競爭死鎖
     };
 
+    const attemptWarmup = () => {
+        if (!videoRef.current || currentUrl !== currentVideoUrlRef.current) return;
+        
+        if (v.readyState >= 2 && v.videoWidth > 0 && verifyVideoFrame(v)) {
+            finalizePlay();
+        } else {
+            // 工業級解法：單次、穩定的微推動，並結合 Play/Pause 激發 iOS 硬體解碼
+            v.currentTime = 0.01; // 避免 0.001 的精度在 iOS 產生無效操作
+            
+            const onSeeked = () => {
+                v.removeEventListener('seeked', onSeeked);
+                if (verifyVideoFrame(v)) {
+                    finalizePlay();
+                } else {
+                    // 若依舊黑畫面，透過短暫 play 喚醒 CoreMedia
+                    const playPromise = v.play();
+                    if (playPromise) {
+                        playPromise.then(() => {
+                            v.pause();
+                            finalizePlay();
+                        }).catch(() => finalizePlay()); // 忽略自動播放阻擋
+                    } else {
+                        finalizePlay();
+                    }
+                }
+            };
+            
+            v.addEventListener('seeked', onSeeked);
+            // 萬一卡死，1.5 秒後強制放行，恢復 UI 控制權
+            setTimeout(() => { 
+                v.removeEventListener('seeked', onSeeked); 
+                finalizePlay(); 
+            }, 1500);
+        }
+    };
+
+    v.pause();
     attemptWarmup();
   }, []);
 
@@ -1591,14 +1571,14 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       if (isSelectingROI) {
           setIsSelectingROI(false);
       } else {
-          // Industrial Grade: Reset video to first frame when entering ROI selection 
-          // to ensure the user draws based on the initial lift position.
           if (videoRef.current) {
               try {
-                  // Using 0.001 instead of 0 avoids black screen issues on Safari/iOS
-                  videoRef.current.currentTime = 0.001;
                   videoRef.current.pause();
                   setIsPlaying(false);
+                  // 安全的 Seek，確保 readyState 允許
+                  if (videoRef.current.readyState >= 1) {
+                      videoRef.current.currentTime = 0.01;
+                  }
               } catch (e) {
                   console.warn("ROI Transition Seek Error:", e);
               }
@@ -1613,6 +1593,16 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const startAnalysis = async () => {
       const hiddenVid = processingVideoRef.current;
       
+      // 🚨 JIT 延遲加載：此時才分配第二個解碼器，讓出首屏載入資源
+      if (currentVideoUrlRef.current && hiddenVid.src !== currentVideoUrlRef.current) {
+          hiddenVid.muted = true;
+          hiddenVid.playsInline = true;
+          hiddenVid.crossOrigin = "anonymous";
+          hiddenVid.preload = "auto";
+          hiddenVid.src = currentVideoUrlRef.current;
+          hiddenVid.load();
+      }
+
       // Ensure video is ready
       if (!hiddenVid.videoWidth || isNaN(hiddenVid.duration) || !isFinite(hiddenVid.duration) || hiddenVid.duration === 0) {
          console.warn("Video metadata not ready. Waiting...");
@@ -1646,7 +1636,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         console.error("Analysis Failed:", err);
         setAnalysisState(AnalysisState.IDLE);
         isAnalyzingRef.current = false;
-        onAnalysisCompleteRef.current([]); // Signal completion with no data to reset UI
+        onAnalysisCompleteRef.current([]); 
       }
   };
 
@@ -2347,8 +2337,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     if (videoRef.current) {
         try {
             if (videoRef.current.readyState >= 1) {
-                // 🔥 將 0 改為 0.001，這與解決手機端黑屏有關 (下面會解釋)
-                videoRef.current.currentTime = 0.001; 
+                // 將 0 改為 0.01 避免 iOS 視為無效值
+                videoRef.current.currentTime = 0.01; 
             }
             videoRef.current.playbackRate = playbackSpeed;
         } catch (e) {
