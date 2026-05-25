@@ -966,15 +966,18 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
   const togglePlay = useCallback(() => {
       if (!videoRef.current) return;
+      // 純命令派發，不碰 React State，避免競態條件
       if (videoRef.current.paused) {
+          // Precise Video Re-seeding when at the very end
+          if (videoRef.current.currentTime >= videoRef.current.duration - 0.1) {
+              videoRef.current.currentTime = 0;
+          }
           const playPromise = videoRef.current.play();
           if (playPromise !== undefined) {
-              playPromise.catch(() => setIsPlaying(false));
+              playPromise.catch((e) => console.warn("Play interrupted:", e));
           }
-          setIsPlaying(true);
       } else {
           videoRef.current.pause();
-          setIsPlaying(false);
       }
   }, []);
 
@@ -2343,54 +2346,80 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     }
 
     setAnalysisState(AnalysisState.COMPLETE); 
-    onAnalysisCompleteRef.current(metrics);
+   onAnalysisCompleteRef.current(metrics);
     onMetricsUpdateRef.current(metrics[0], metrics);
 
-    // === 🐒C++++ 工業級解碼器交接協議 (Hardware Decoder Handoff) ===
-    
-    // 🔥 2. 釋放隱藏影片對 iOS HEVC 硬體解碼管線的壟斷
+    // === 🏭 INDUSTRIAL DECODER HANDOFF PROTOCOL V2 ===
+
+    // 1. Release hidden video from monopolizing iOS HEVC hardware decoder pipeline
     if (processingVideoRef.current) {
         const hiddenVid = processingVideoRef.current;
         hiddenVid.pause();
-        hiddenVid.removeAttribute('src'); // 拔除媒體源
-        hiddenVid.load(); // 徹底清空 CoreMedia 管線與記憶體駐留
+        hiddenVid.removeAttribute('src');
+        hiddenVid.load();
     }
 
-    // 🔥 3. 強制喚醒主播放器並奪回硬體解碼器
+    // 2. Force-wake main player and reclaim hardware decoder (iOS HEVC Rebirth Pattern)
     if (videoRef.current) {
         try {
             const v = videoRef.current;
-            v.playbackRate = playbackSpeed;
-            if (v.readyState >= 1) {
-                v.currentTime = 0.01; 
-            }
+            v.pause();
             
-            // 透過微小的播放動作 (Play -> Pause) 刺激 CoreMedia 重新綁定渲染層與 Canvas 同步機制
-            const playPromise = v.play();
-            if (playPromise !== undefined) {
-                playPromise.then(() => {
-                    v.pause();
-                    drawOverlay(metrics[0], 0); // 確保硬體解碼成功後，精準繪製第一幀軌跡
-                }).catch(() => {
-                    // 即使 Auto-play 策略阻擋，解碼器也已經被喚醒
-                    v.pause();
-                    drawOverlay(metrics[0], 0);
-                });
+            // 🍎 [核心級修正] iOS Safari HEVC 硬體解碼器搶奪重置
+            // 由於剛剛 Offscreen 隱藏影片霸佔了 WebKit 的 HEVC 硬體解碼與時間軸同步引擎，
+            // 雖然分析完畢且釋放了，但主畫面的 <video> 還是處於 "被閹割" 的脫鉤狀態 (能播但 currentTime 不動)。
+            // 唯一能在不重新上傳檔案的情況下解決的方法，就是讓這個 <video> "重新投胎"，
+            // 強迫 Safari 重新解析 src，奪回第一順位的 AVPlayer 資源！
+            const originalSrc = v.src;
+            if (originalSrc) {
+                // 執行重新投胎
+                v.removeAttribute('src');
+                v.load();
+                v.src = originalSrc;
+                v.load();
+                
+                v.playbackRate = playbackSpeed;
+                setIsPlaying(false);
+
+                // 綁定重生後的生命週期鉤子
+                const onReincarnated = () => {
+                    v.removeEventListener('loadeddata', onReincarnated);
+                    v.currentTime = 0.001; // 精準歸零
+                    
+                    setTimeout(() => {
+                        v.pause(); // 保險起見再次暫停
+                        drawOverlay(metrics[0], 0, rawDataRef.current[0]?.landmarks);
+                        renderFrameUpdates();
+                    }, 50);
+                };
+                v.addEventListener('loadeddata', onReincarnated);
             } else {
-                v.pause();
-                drawOverlay(metrics[0], 0);
+                // 退路防守
+                v.currentTime = 0.001;
+                setIsPlaying(false);
+                drawOverlay(metrics[0], 0, rawDataRef.current[0]?.landmarks);
+                renderFrameUpdates();
             }
         } catch (e) {
             console.warn("Playback init error: ", e);
-            drawOverlay(metrics[0], 0);
+            setIsPlaying(false);
+            drawOverlay(metrics[0], 0, rawDataRef.current[0]?.landmarks);
+            renderFrameUpdates();
         }
     } else {
-        drawOverlay(metrics[0], 0);
+        setIsPlaying(false);
+        drawOverlay(metrics[0], 0, rawDataRef.current[0]?.landmarks);
+
+        setTimeout(() => {
+            renderFrameUpdates();
+        }, 50);
     }
   };
-
   const rafIdRef = useRef<number | null>(null);
   const lastMetricsUpdateTimeRef = useRef<number>(0);
+  
+  const focusSideRef = useRef(focusSide);
+  useEffect(() => { focusSideRef.current = focusSide; }, [focusSide]);
 
   const vec3BufferA = useRef(new Float64Array(3));
   const vec3BufferB = useRef(new Float64Array(3));
@@ -2406,6 +2435,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       
       const w = overlayCanvas.width; 
       const h = overlayCanvas.height; 
+      const currentFocusSide = focusSideRef.current;
       
       overlayCtx.clearRect(0, 0, w, h);
 
@@ -2416,8 +2446,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           const displayLandmarks = landmarks.map((lm, idx) => {
               if (idx < 11) return lm; // Keep face points
               const isLeft = idx % 2 === 1;
-              if (focusSide === 'L' && !isLeft) return { ...lm, visibility: 0 };
-              if (focusSide === 'R' && isLeft) return { ...lm, visibility: 0 };
+              if (currentFocusSide === 'L' && !isLeft) return { ...lm, visibility: 0 };
+              if (currentFocusSide === 'R' && isLeft) return { ...lm, visibility: 0 };
               return lm;
           });
 
@@ -2465,7 +2495,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
               overlayCtx.restore();
           };
           
-          if (focusSide === 'all') {
+          if (currentFocusSide === 'all') {
               // Draw both left and right if focusSide is 'all'
               if (metric.lKneeAngle !== undefined) drawBadgeAtIdx(25, `K: ${(metric.lKneeAngle || 0).toFixed(0)}°`, '#facc15');
               if (metric.rKneeAngle !== undefined) drawBadgeAtIdx(26, `K: ${(metric.rKneeAngle || 0).toFixed(0)}°`, '#facc15');
@@ -2514,21 +2544,21 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
               }
           } else {
               const getIdx = (lIdx: number, rIdx: number) => {
-                  if (focusSide === 'L') return lIdx;
-                  if (focusSide === 'R') return rIdx;
+                  if (currentFocusSide === 'L') return lIdx;
+                  if (currentFocusSide === 'R') return rIdx;
                   return (displayLandmarks[lIdx]?.visibility || 0) > (displayLandmarks[rIdx]?.visibility || 0) ? lIdx : rIdx;
               };
 
               const kneeIdx = getIdx(25, 26);
-              const kneeVal = focusSide === 'L' && metric.lKneeAngle !== undefined ? metric.lKneeAngle : (focusSide === 'R' && metric.rKneeAngle !== undefined ? metric.rKneeAngle : metric.kneeAngle);
+              const kneeVal = currentFocusSide === 'L' && metric.lKneeAngle !== undefined ? metric.lKneeAngle : (currentFocusSide === 'R' && metric.rKneeAngle !== undefined ? metric.rKneeAngle : metric.kneeAngle);
               drawBadgeAtIdx(kneeIdx, `K: ${(kneeVal || 0).toFixed(0)}°`, '#facc15');
               
               const ankleIdx = getIdx(27, 28);
-              const ankleVal = focusSide === 'L' && metric.lAnkleAngle !== undefined ? metric.lAnkleAngle : (focusSide === 'R' && metric.rAnkleAngle !== undefined ? metric.rAnkleAngle : metric.ankleAngle);
+              const ankleVal = currentFocusSide === 'L' && metric.lAnkleAngle !== undefined ? metric.lAnkleAngle : (currentFocusSide === 'R' && metric.rAnkleAngle !== undefined ? metric.rAnkleAngle : metric.ankleAngle);
               drawBadgeAtIdx(ankleIdx, `A: ${(ankleVal || 0).toFixed(0)}°`, '#10b981');
 
               const hipIdx = getIdx(23, 24);
-              const hipVal = focusSide === 'L' && metric.lHipAngle !== undefined ? metric.lHipAngle : (focusSide === 'R' && metric.rHipAngle !== undefined ? metric.rHipAngle : metric.hipAngle);
+              const hipVal = currentFocusSide === 'L' && metric.lHipAngle !== undefined ? metric.lHipAngle : (currentFocusSide === 'R' && metric.rHipAngle !== undefined ? metric.rHipAngle : metric.hipAngle);
               drawBadgeAtIdx(hipIdx, `H: ${(hipVal || 0).toFixed(0)}°`, '#60a5fa');
               
               if (displayLandmarks[hipIdx] && displayLandmarks[hipIdx - 12] && displayLandmarks[hipIdx].visibility > 0.3 && displayLandmarks[hipIdx - 12].visibility > 0.3) {
@@ -2821,55 +2851,135 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       }
       
       overlayCtx.restore();
-  }, [focusSide]);
+    }, []);
+
+  const lastRenderedVideoTimeRef = useRef<number>(-1);
+  const lastSafariVideoTimeRef = useRef<number>(-1);
+  const lastRealTimeRef = useRef<number>(0);
+  const interpolatedTimeRef = useRef<number>(0);
 
   const renderFrameUpdates = useCallback(() => {
       if (!videoRef.current || fullLiftHistory.current.length === 0) return;
-      const t = videoRef.current.currentTime;
-      
-      const history = fullLiftHistory.current;
-      let closestIdx = 0, l = 0, r = history.length - 1;
-      while (l <= r) {
-          const m = (l + r) >> 1;
-          if (parseFloat(history[m].time) <= t) { closestIdx = m; l = m + 1; }
-          else r = m - 1;
-      }
-      const closest = history[closestIdx];
+      let t = videoRef.current.currentTime;
+      const isPaused = videoRef.current.paused;
+      const nowMs = performance.now();
 
-      let rawFrame = null;
-      const rawData = rawDataRef.current;
-      if (rawData.length > 0) {
-          let rawIdx = 0, rl = 0, rr = rawData.length - 1;
-          while (rl <= rr) {
-              const m = (rl + rr) >> 1;
-              if (rawData[m].time <= t) { rawIdx = m; rl = m + 1; }
-              else rr = m - 1;
-          }
-          if (Math.abs(rawData[rawIdx].time - t) < 0.15) rawFrame = rawData[rawIdx];
-      }
-
-      drawOverlay(closest, closestIdx, rawFrame?.landmarks);
-
-      const now = performance.now();
-      const throttleMs = (videoRef.current && !videoRef.current.paused) ? 33 : 0; // 30 FPS
-      if (now - lastMetricsUpdateTimeRef.current >= throttleMs) {
-          onMetricsUpdateRef.current(closest, history);
-          lastMetricsUpdateTimeRef.current = now;
-      }
-
-      if (videoRef.current && !videoRef.current.paused) {
-          if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
-              // @ts-ignore
-              rafIdRef.current = videoRef.current.requestVideoFrameCallback(renderFrameUpdates);
+      // 🍎 [核心級修正] iOS Safari HEVC 時間軸凍結插值器 (Time Interpolator)
+      // 若是遇到 AVFoundation 完美脫鉤，影片畫面在跑，但 currentTime 被凍結的狀況：
+      if (!isPaused) {
+          if (t === lastSafariVideoTimeRef.current) {
+              // 時間軸被凍結，透過系統時鐘強行插值推進
+              const deltaMs = nowMs - lastRealTimeRef.current;
+              const clampDelta = Math.min(deltaMs, 100); // 防禦切換分頁的高維度跳躍
+              interpolatedTimeRef.current += (clampDelta / 1000) * (videoRef.current.playbackRate || 1);
+              if (interpolatedTimeRef.current > videoRef.current.duration) {
+                  interpolatedTimeRef.current = videoRef.current.duration;
+              }
+              t = interpolatedTimeRef.current; 
           } else {
-              rafIdRef.current = requestAnimationFrame(renderFrameUpdates);
+              // 恢復正常，重新對齊
+              interpolatedTimeRef.current = t;
+          }
+      } else {
+          interpolatedTimeRef.current = t;
+      }
+
+      lastSafariVideoTimeRef.current = videoRef.current.currentTime; // 紀錄真正的 Safari 時間
+      lastRealTimeRef.current = nowMs;
+
+      // ⚙️ THE UNBREAKABLE LOOP: Only draw if time actually advanced or if forced (paused)
+      if (t !== lastRenderedVideoTimeRef.current || isPaused) {
+          lastRenderedVideoTimeRef.current = t;
+
+          const history = fullLiftHistory.current;
+          let closestIdx = 0, l = 0, r = history.length - 1;
+          while (l <= r) {
+              const m = (l + r) >> 1;
+              if (parseFloat(history[m].time) <= t) { closestIdx = m; l = m + 1; }
+              else r = m - 1;
+          }
+          const closest = history[closestIdx];
+
+          let rawFrame = null;
+          const rawData = rawDataRef.current;
+          if (rawData.length > 0) {
+              let rawIdx = 0, rl = 0, rr = rawData.length - 1;
+              while (rl <= rr) {
+                  const m = (rl + rr) >> 1;
+                  if (rawData[m].time <= t) { rawIdx = m; rl = m + 1; }
+                  else rr = m - 1;
+              }
+              if (Math.abs(rawData[rawIdx].time - t) < 0.15) rawFrame = rawData[rawIdx];
+          }
+
+          drawOverlay(closest, closestIdx, rawFrame?.landmarks);
+
+          const now = performance.now();
+          const throttleMs = !isPaused ? 33 : 0; // 30 FPS
+          if (now - lastMetricsUpdateTimeRef.current >= throttleMs) {
+              onMetricsUpdateRef.current(closest, history);
+              lastMetricsUpdateTimeRef.current = now;
           }
       }
-  }, [drawOverlay]);
+  }, []);
 
-  const handleTimeUpdate = () => {
-    if (videoRef.current && videoRef.current.paused) renderFrameUpdates();
-  };
+  // 2. 閉包陷阱免疫：永遠指向最新的 Render 函數
+  const renderFrameUpdatesRef = useRef(renderFrameUpdates);
+  useEffect(() => {
+      renderFrameUpdatesRef.current = renderFrameUpdates;
+  }, [renderFrameUpdates]);
+
+  const loopActiveRef = useRef(false);
+
+  // 3. FSM 啟動引擎
+  const startSyncLoop = useCallback(() => {
+      if (loopActiveRef.current) return; // 防止重複啟動
+      loopActiveRef.current = true;
+
+      // 🍏 核心級手術：iOS Safari HEVC 硬件脫鉤防禦機制
+      // Safari 為了省電，在 HEVC 播放時會將視訊交由 AVFoundation 獨立渲染
+      // 導致 JavaScript 的 video.currentTime 卡死不更新。
+      // 解法：建立一顆隱形 1x1 Canvas，每一幀強迫繪製一枚像素，迫使 WebKit 與硬體解碼器保持時序同步！
+      let forceSyncCtx: CanvasRenderingContext2D | null = null;
+      try {
+          const forceSyncCanvas = document.createElement('canvas');
+          forceSyncCanvas.width = 1;
+          forceSyncCanvas.height = 1;
+          forceSyncCtx = forceSyncCanvas.getContext('2d', { willReadFrequently: true });
+      } catch (e) {
+          console.warn("Could not create force-sync canvas");
+      }
+
+      const loop = () => {
+          if (!loopActiveRef.current) return;
+
+          // 強迫 Safari 從 AVFoundation 提取最新幀，喚醒 currentTime 更新機制
+          if (forceSyncCtx && videoRef.current && videoRef.current.readyState >= 2) {
+              try {
+                  forceSyncCtx.drawImage(videoRef.current, 0, 0, 1, 1);
+              } catch (e) {
+                  // ignore
+              }
+          }
+
+          renderFrameUpdatesRef.current(); // 永遠執行最新鮮的邏輯
+          rafIdRef.current = requestAnimationFrame(loop);
+      };
+
+      // 引擎點火
+      rafIdRef.current = requestAnimationFrame(loop);
+  }, []);
+
+  // 4. FSM 煞車引擎
+  const stopSyncLoop = useCallback(() => {
+      loopActiveRef.current = false;
+      if (rafIdRef.current) {
+          cancelAnimationFrame(rafIdRef.current);
+          rafIdRef.current = null;
+      }
+  }, []);
+
+  // (Removed handleTimeUpdate)
 
   useEffect(() => {
       if (analysisState === AnalysisState.COMPLETE && videoRef.current && videoRef.current.paused) {
@@ -2896,16 +3006,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   }, [playbackSpeed, isPlaying]);
 
   const cleanupMemoryOnRepeat = useCallback(() => {
-    // 1. 清理所有 pending 的 rAF
-    if (rafIdRef.current) {
-      if (videoRef.current && 'cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
-        // @ts-ignore
-        videoRef.current.cancelVideoFrameCallback(rafIdRef.current);
-      } else {
-        cancelAnimationFrame(rafIdRef.current);
-      }
-      rafIdRef.current = null;
-    }
+    // 1. 關閉引擎
+    stopSyncLoop();
     
     // 2. 清理 Canvas 緩衝
     const pathCtx = pathCanvasRef.current?.getContext('2d');
@@ -2913,7 +3015,13 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     if (pathCtx) pathCtx.clearRect(0, 0, pathCanvasRef.current?.width || 0, pathCanvasRef.current?.height || 0);
     if (overlayCtx) overlayCtx.clearRect(0, 0, canvasRef.current?.width || 0, canvasRef.current?.height || 0);
     
-    // 3. 強制 GC hint（現代瀏覽器會智能處理）
+    // 3. Reset Engine loop tracking
+    lastRenderedVideoTimeRef.current = -1;
+    lastSafariVideoTimeRef.current = -1;
+    lastRealTimeRef.current = 0;
+    interpolatedTimeRef.current = 0;
+
+    // 4. 強制 GC hint（現代瀏覽器會智能處理）
     // @ts-ignore
     if (typeof window.gc === 'function') {
       // @ts-ignore
@@ -2934,30 +3042,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   }, [isPlaying, cleanupMemoryOnRepeat]);
   
   useEffect(() => {
-     const cancelRaf = (id: number) => {
-         if (videoRef.current && 'cancelVideoFrameCallback' in HTMLVideoElement.prototype) {
-             // @ts-ignore
-             videoRef.current.cancelVideoFrameCallback(id);
-         } else {
-             cancelAnimationFrame(id);
-         }
-     };
-
-     if (isPlaying) {
-         if (rafIdRef.current) cancelRaf(rafIdRef.current);
-         if (videoRef.current && 'requestVideoFrameCallback' in HTMLVideoElement.prototype) {
-             // @ts-ignore
-             rafIdRef.current = videoRef.current.requestVideoFrameCallback(renderFrameUpdates);
-         } else {
-             rafIdRef.current = requestAnimationFrame(renderFrameUpdates);
-         }
-     } else {
-         if (rafIdRef.current) cancelRaf(rafIdRef.current);
+     if (rafIdRef.current) {
+         cancelAnimationFrame(rafIdRef.current);
+         rafIdRef.current = null;
      }
-     return () => {
-        if (rafIdRef.current) cancelRaf(rafIdRef.current);
-     };
-  }, [isPlaying, renderFrameUpdates]);
+  }, []);
 
   const shouldShowInteractionArea = (isSelectingROI || isSelectingDLT || (normalizedROI && analysisState !== AnalysisState.COMPLETE));
   
@@ -2996,14 +3085,36 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           muted={isMuted}
           playsInline
           preload="auto"
-          onTimeUpdate={handleTimeUpdate}
+          onTimeUpdate={(e) => {
+              // 保留給滑動進度條時的精準同步
+              if (videoRef.current && videoRef.current.paused) renderFrameUpdates();
+          }}
+          onPlay={() => {
+              setIsPlaying(true);
+              startSyncLoop();
+          }}
+          onPause={() => {
+              setIsPlaying(false);
+              stopSyncLoop();
+              renderFrameUpdates(); // 確保暫停時精準渲染最後一幀
+          }}
+          onSeeked={() => {
+              renderFrameUpdates();
+          }}
+          onEnded={() => {
+              setIsPlaying(false);
+              stopSyncLoop();
+              cleanupMemoryOnRepeat();
+          }}
           onError={handleVideoError}
           onCanPlay={handleCanPlay}
           onLoadedData={handleCanPlay}
-          onPlaying={handleCanPlay}
+          onPlaying={(e) => {
+              handleCanPlay(e as any);
+              setIsPlaying(true);
+              startSyncLoop();
+          }}
           onLoadedMetadata={updateVideoLayout}
-          onPlay={updateVideoLayout} 
-          onEnded={() => setIsPlaying(false)}
           crossOrigin="anonymous"
         />
 
@@ -3454,6 +3565,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
                           rawDataRef.current = [];
                           renderCommandsRef.current = [];
                           lastRenderedIndexRef.current = -1;
+                          lastRenderedVideoTimeRef.current = -1;
                           startXRef.current = 0;
                           startYRef.current = 0;
                           
