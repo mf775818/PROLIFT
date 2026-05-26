@@ -2264,8 +2264,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
             acceleration: accel || 0,
             force: Math.max(0, force || 0),
             power: Math.max(0, power || 0), 
-            x: sX, // 將原始的 X, Y 保留，供前端畫 2D 軌跡使用
+            x: sX, // 未校正的原始 X, 供前端畫 2D 軌跡使用
             y: sY, 
+            physX: physX, // 真實物理 X (經 DLT 校正與深度轉換)
+            physY: physY, // 真實物理 Y (經 DLT 校正與深度轉換)
             kneeAngle: outKnee[i], 
             hipAngle: outHip[i],
             ankleAngle: outAnkle[i],
@@ -2416,6 +2418,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     }
   };
   const rafIdRef = useRef<number | null>(null);
+  const rvfcIdRef = useRef<number | null>(null);
   const lastMetricsUpdateTimeRef = useRef<number>(0);
   
   const focusSideRef = useRef(focusSide);
@@ -2858,34 +2861,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const lastRealTimeRef = useRef<number>(0);
   const interpolatedTimeRef = useRef<number>(0);
 
-  const renderFrameUpdates = useCallback(() => {
+  const renderFrameUpdates = useCallback((mediaTime?: number) => {
       if (!videoRef.current || fullLiftHistory.current.length === 0) return;
-      let t = videoRef.current.currentTime;
+      let t = mediaTime !== undefined ? mediaTime : videoRef.current.currentTime;
       const isPaused = videoRef.current.paused;
-      const nowMs = performance.now();
-
-      // 🍎 [核心級修正] iOS Safari HEVC 時間軸凍結插值器 (Time Interpolator)
-      // 若是遇到 AVFoundation 完美脫鉤，影片畫面在跑，但 currentTime 被凍結的狀況：
-      if (!isPaused) {
-          if (t === lastSafariVideoTimeRef.current) {
-              // 時間軸被凍結，透過系統時鐘強行插值推進
-              const deltaMs = nowMs - lastRealTimeRef.current;
-              const clampDelta = Math.min(deltaMs, 100); // 防禦切換分頁的高維度跳躍
-              interpolatedTimeRef.current += (clampDelta / 1000) * (videoRef.current.playbackRate || 1);
-              if (interpolatedTimeRef.current > videoRef.current.duration) {
-                  interpolatedTimeRef.current = videoRef.current.duration;
-              }
-              t = interpolatedTimeRef.current; 
-          } else {
-              // 恢復正常，重新對齊
-              interpolatedTimeRef.current = t;
-          }
-      } else {
-          interpolatedTimeRef.current = t;
-      }
-
-      lastSafariVideoTimeRef.current = videoRef.current.currentTime; // 紀錄真正的 Safari 時間
-      lastRealTimeRef.current = nowMs;
 
       // ⚙️ THE UNBREAKABLE LOOP: Only draw if time actually advanced or if forced (paused)
       if (t !== lastRenderedVideoTimeRef.current || isPaused) {
@@ -2931,43 +2910,36 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
   const loopActiveRef = useRef(false);
 
-  // 3. FSM 啟動引擎
+  // 3. FSM 啟動引擎 (工業級實作：requestVideoFrameCallback)
   const startSyncLoop = useCallback(() => {
-      if (loopActiveRef.current) return; // 防止重複啟動
+      if (loopActiveRef.current) return;
       loopActiveRef.current = true;
 
-      // 🍏 核心級手術：iOS Safari HEVC 硬件脫鉤防禦機制
-      // Safari 為了省電，在 HEVC 播放時會將視訊交由 AVFoundation 獨立渲染
-      // 導致 JavaScript 的 video.currentTime 卡死不更新。
-      // 解法：建立一顆隱形 1x1 Canvas，每一幀強迫繪製一枚像素，迫使 WebKit 與硬體解碼器保持時序同步！
-      let forceSyncCtx: CanvasRenderingContext2D | null = null;
-      try {
-          const forceSyncCanvas = document.createElement('canvas');
-          forceSyncCanvas.width = 1;
-          forceSyncCanvas.height = 1;
-          forceSyncCtx = forceSyncCanvas.getContext('2d', { willReadFrequently: true });
-      } catch (e) {
-          console.warn("Could not create force-sync canvas");
-      }
-
-      const loop = () => {
+      // 🍏 業界標準解法：使用 requestVideoFrameCallback 解決 HEVC (H.265) 解碼脫鉤問題。
+      // 當影片開始播放或受到 AVFoundation 處理時，currentTime 會抖動或批量更新。
+      // requestVideoFrameCallback 會在「每一幀實體影像渲染到螢幕前」的當下，將精確的 mediaTime 交給我們。
+      const loop = (now: number, metadata?: any) => {
           if (!loopActiveRef.current) return;
-
-          // 強迫 Safari 從 AVFoundation 提取最新幀，喚醒 currentTime 更新機制
-          if (forceSyncCtx && videoRef.current && videoRef.current.readyState >= 2) {
-              try {
-                  forceSyncCtx.drawImage(videoRef.current, 0, 0, 1, 1);
-              } catch (e) {
-                  // ignore
+          
+          if (metadata && metadata.mediaTime !== undefined) {
+              // 1. 原生 API：取得強約束的解碼器真實時間
+              renderFrameUpdatesRef.current(metadata.mediaTime);
+              if (videoRef.current && 'requestVideoFrameCallback' in videoRef.current) {
+                  rvfcIdRef.current = (videoRef.current as any).requestVideoFrameCallback(loop);
               }
+          } else {
+              // 2. 退路防守：針對不支援 rVFC 的舊瀏覽器，採傳統 RAF 輪詢
+              renderFrameUpdatesRef.current();
+              rafIdRef.current = requestAnimationFrame(loop);
           }
-
-          renderFrameUpdatesRef.current(); // 永遠執行最新鮮的邏輯
-          rafIdRef.current = requestAnimationFrame(loop);
       };
 
-      // 引擎點火
-      rafIdRef.current = requestAnimationFrame(loop);
+      // 引擎點火：優先使用高精度影像硬體回呼，否則退回 60hz 主線程 RAF
+      if (videoRef.current && 'requestVideoFrameCallback' in videoRef.current) {
+          rvfcIdRef.current = (videoRef.current as any).requestVideoFrameCallback(loop);
+      } else {
+          rafIdRef.current = requestAnimationFrame(loop);
+      }
   }, []);
 
   // 4. FSM 煞車引擎
@@ -2976,6 +2948,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       if (rafIdRef.current) {
           cancelAnimationFrame(rafIdRef.current);
           rafIdRef.current = null;
+      }
+      if (rvfcIdRef.current && videoRef.current && 'cancelVideoFrameCallback' in videoRef.current) {
+          (videoRef.current as any).cancelVideoFrameCallback(rvfcIdRef.current);
+          rvfcIdRef.current = null;
       }
   }, []);
 

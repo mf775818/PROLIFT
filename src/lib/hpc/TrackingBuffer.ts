@@ -84,4 +84,5 @@ export class TrackingBuffer {
   }
 
   public get head(): number { return this.meta[0]; }
+  public get validFramesCount(): number { return this.meta[0]; }
 }

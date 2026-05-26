@@ -321,26 +321,28 @@ export class CalibrationEngineHPC {
     out[1] = ny * invW;
   }
 
-  public applyPerspectiveTransform(buffer: TrackingBuffer): void {
-    const { x, y, head } = buffer;
-    const m = this.homographyMatrix;
-
+  public applyPerspectiveTransform(buffer: TrackingBuffer, homographyMatrix?: Float64Array): void {
+    const m = homographyMatrix || this.homographyMatrix;
     const m0 = m[0], m1 = m[1], m2 = m[2];
     const m3 = m[3], m4 = m[4], m5 = m[5];
     const m6 = m[6], m7 = m[7], m8 = m[8];
 
-    for (let i = 0; i < head; i++) {
-      const xi = x[i];
-      const yi = y[i];
+    // 必須遍歷有效幀，強制原地覆寫 (In-place Mutation) 確保不會發生指標丟失
+    const frameCount = (buffer as any).validFramesCount !== undefined ? (buffer as any).validFramesCount : buffer.head;
+    for (let i = 0; i < frameCount; i++) {
+      const xi = buffer.x[i];
+      const yi = buffer.y[i];
 
       const nx = m0 * xi + m1 * yi + m2;
       const ny = m3 * xi + m4 * yi + m5;
       const w  = m6 * xi + m7 * yi + m8;
 
       // 安全除法防護 (Div-By-Zero)
-      const invW = Math.abs(w) > 1e-8 ? 1.0 / w : 0;
-      x[i] = nx * invW;
-      y[i] = ny * invW;
+      if (Math.abs(w) > 1e-10) {
+        const invW = 1.0 / w;
+        buffer.x[i] = nx * invW;
+        buffer.y[i] = ny * invW;
+      }
     }
   }
 

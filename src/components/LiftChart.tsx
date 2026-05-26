@@ -212,8 +212,8 @@ export const LiftChart: React.FC<LiftChartProps> = React.memo(({ data, currentTi
         (row.rAnkleAngle || 0).toFixed(1),
         (row.lHipAngle || 0).toFixed(1),
         (row.rHipAngle || 0).toFixed(1),
-        row.x.toFixed(6),
-        row.y.toFixed(6),
+        (row.physX ?? row.x).toFixed(6), // 導出經 DLT 校正的物理 X
+        (row.physY ?? row.y).toFixed(6), // 導出經 DLT 校正的物理 Y
         (row.lHipX || 0).toFixed(6),
         (row.lHipY || 0).toFixed(6),
         (row.rHipX || 0).toFixed(6),

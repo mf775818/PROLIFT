@@ -5,6 +5,8 @@ export interface LiftMetrics {
   power: number;
   x: number;
   y: number;
+  physX?: number;
+  physY?: number;
   kneeAngle: number;
   hipAngle: number;
   ankleAngle?: number;
