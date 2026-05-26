@@ -86,9 +86,12 @@ export class MP4Demuxer {
 
   private onSamples(trackId: number, user: any, samples: any[]) {
     for (const sample of samples) {
+      // 工業級解碼器防守：嚴格計算 PTS (Presentation Time Stamp) = DTS + CTS
+      // HEVC (H.265) 極度依賴 B-Frame，其解碼順序 (DTS) 與顯示順序 (PTS) 可能不同，若不加上 CTS 偏移，將導致幀序錯亂與追蹤偏移。
+      const pts = sample.dts + (sample.cts || 0);
       this.onChunk(new EncodedVideoChunk({
         type: sample.is_sync ? 'key' : 'delta',
-        timestamp: 1e6 * sample.cts / sample.timescale,
+        timestamp: 1e6 * pts / sample.timescale,
         duration: 1e6 * sample.duration / sample.timescale,
         data: sample.data
       }));
