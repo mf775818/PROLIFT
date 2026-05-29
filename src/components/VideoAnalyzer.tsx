@@ -2620,8 +2620,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       const currentInvHMatrix = invHMatrixRef.current;
 
       if (currentIsDltConfirmed && currentInvHMatrix && currentHMatrix) {
-          const vW = processingVideoRef.current?.videoWidth || w;
-          const vH = processingVideoRef.current?.videoHeight || h;
+          const vW = videoRef.current?.videoWidth || w;
+          const vH = videoRef.current?.videoHeight || h;
           const zx_v = zx * vW / w; 
           const zy_v = zy * vH / h;
           const v3A = vec3BufferA.current;
@@ -2759,8 +2759,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
       if (currentIsDltConfirmed && currentInvHMatrix) {
           overlayCtx.save();
           const divs = 10;
-          const vW = processingVideoRef.current?.videoWidth || w;
-          const vH = processingVideoRef.current?.videoHeight || h;
+          const vW = videoRef.current?.videoWidth || w;
+          const vH = videoRef.current?.videoHeight || h;
           if (currentDltPoints.length === 4) {
               const srcPts = [
                   currentDltPoints[0].x * vW, currentDltPoints[0].y * vH,
