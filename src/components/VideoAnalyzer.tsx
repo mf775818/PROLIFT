@@ -2434,11 +2434,11 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
   const drawOverlay = useCallback((metric: LiftMetrics, currentIndex: number, landmarks?: Keypoint[]) => {
       const overlayCanvas = canvasRef.current; 
-      const overlayCtx = overlayCanvas?.getContext('2d', { alpha: true }); 
+      const overlayCtx = overlayCanvas?.getContext('2d', { alpha: true, desynchronized: true } as any); 
       if (!overlayCanvas || !overlayCtx) return;
       
       const pathCanvas = pathCanvasRef.current; 
-      const pathCtx = pathCanvas?.getContext('2d', { alpha: true }); 
+      const pathCtx = pathCanvas?.getContext('2d', { alpha: true, desynchronized: true } as any); 
       if (!pathCanvas || !pathCtx) return;
       
       const w = overlayCanvas.width; 
@@ -2865,6 +2865,8 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const lastSafariVideoTimeRef = useRef<number>(-1);
   const lastRealTimeRef = useRef<number>(0);
   const interpolatedTimeRef = useRef<number>(0);
+  const lastSearchIndexRef = useRef<number>(0);
+  const lastRawSearchIndexRef = useRef<number>(0);
 
   const renderFrameUpdates = useCallback((mediaTime?: number) => {
       if (!videoRef.current || fullLiftHistory.current.length === 0) return;
@@ -2876,27 +2878,60 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
           lastRenderedVideoTimeRef.current = t;
 
           const history = fullLiftHistory.current;
-          let closestIdx = 0, l = 0, r = history.length - 1;
-          while (l <= r) {
-              const m = (l + r) >> 1;
-              if (parseFloat(history[m].time) <= t) { closestIdx = m; l = m + 1; }
-              else r = m - 1;
+          const len = history.length;
+          
+          let p1Idx = lastSearchIndexRef.current;
+          if (p1Idx >= len) p1Idx = len - 1;
+          if (p1Idx < 0) p1Idx = 0;
+          
+          while (p1Idx < len - 1 && parseFloat(history[p1Idx + 1].time) <= t) {
+              p1Idx++;
           }
-          const closest = history[closestIdx];
+          while (p1Idx > 0 && parseFloat(history[p1Idx].time) > t) {
+              p1Idx--;
+          }
+          lastSearchIndexRef.current = p1Idx;
+
+          let closest = history[p1Idx];
+          
+          // LERP calculations for smooth sub-frame rendering (Cross-modal Clock Desynchronization fix)
+          if (p1Idx < len - 1) {
+              const p1 = history[p1Idx];
+              const p2 = history[p1Idx + 1];
+              const t1 = parseFloat(p1.time);
+              const t2 = parseFloat(p2.time);
+              const timeDiff = t2 - t1;
+              if (timeDiff > 0 && t >= t1 && t <= t2) {
+                  const ratio = (t - t1) / timeDiff;
+                  closest = { ...p1 };
+                  // Interpolate all corresponding numbers
+                  for (const key in p1) {
+                      if (key !== 'time' && typeof (p1 as any)[key] === 'number' && typeof (p2 as any)[key] === 'number') {
+                          (closest as any)[key] = (p1 as any)[key] + ((p2 as any)[key] - (p1 as any)[key]) * ratio;
+                      }
+                  }
+              }
+          }
 
           let rawFrame = null;
           const rawData = rawDataRef.current;
-          if (rawData.length > 0) {
-              let rawIdx = 0, rl = 0, rr = rawData.length - 1;
-              while (rl <= rr) {
-                  const m = (rl + rr) >> 1;
-                  if (rawData[m].time <= t) { rawIdx = m; rl = m + 1; }
-                  else rr = m - 1;
+          const rawLen = rawData.length;
+          if (rawLen > 0) {
+              let rawIdx = lastRawSearchIndexRef.current;
+              if (rawIdx >= rawLen) rawIdx = rawLen - 1;
+              if (rawIdx < 0) rawIdx = 0;
+              
+              while (rawIdx < rawLen - 1 && rawData[rawIdx + 1].time <= t) {
+                  rawIdx++;
               }
+              while (rawIdx > 0 && rawData[rawIdx].time > t) {
+                  rawIdx--;
+              }
+              lastRawSearchIndexRef.current = rawIdx;
               if (Math.abs(rawData[rawIdx].time - t) < 0.15) rawFrame = rawData[rawIdx];
           }
 
-          drawOverlay(closest, closestIdx, rawFrame?.landmarks);
+          drawOverlay(closest, p1Idx, rawFrame?.landmarks);
 
           const now = performance.now();
           const throttleMs = !isPaused ? 33 : 0; // 30 FPS
