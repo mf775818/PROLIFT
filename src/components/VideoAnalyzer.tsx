@@ -1815,17 +1815,22 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
              const isDuplicateFrame = (currentTime > 0) && (currentHash === prevFrameData);
              prevFrameData = currentHash as any;
 
-             if (currentTime > 0 && cvTracker.isInitialized && !isDuplicateFrame) {
+             if (isDuplicateFrame && fallbackSeekedFired) {
+                 console.warn("Skipped duplicate decoded frame (iOS Safari bug mitigaton), Time:", currentTime);
+                 setProgress(Math.max(0, Math.min(100, Math.round((currentTime / duration) * 100))));
+                 currentTime += step; 
+                 continue; // Completely drop the frame and advance the video time
+             }
+
+             if (currentTime > 0 && cvTracker.isInitialized) {
                  try {
                     const res = cvTracker.track(ctx);
                     if (res) trackedCenter = { x: (res.x + res.width / 2) / procW, y: (res.y + res.height / 2) / procH };
                  } catch (cvTrackErr) {
                     console.warn("OpenCV Tracking error:", cvTrackErr);
                  }
-             } else if (isDuplicateFrame && fallbackSeekedFired) {
-                 console.warn("Skipped duplicate decoded frame (iOS Safari bug mitigaton), Time:", currentTime);
              }
-             
+
              // --- PROTECTED POSE DETECTION WITH TIMEOUT ---
              const poseResult = await new Promise<PoseResult>((resolve, reject) => { 
                 const timeout = setTimeout(() => {

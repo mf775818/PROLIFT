@@ -22,9 +22,21 @@ const injectScripts = () => {
     });
 
     // Re-inject OpenCV
+    // Patch Object.defineProperty to prevent Emscripten throwing getter
+    if (!(window as any)._definePropertyPatched) {
+        const _origDefineProperty = Object.defineProperty;
+        Object.defineProperty = function(obj, prop, descriptor) {
+            if (prop === 'arguments' && descriptor && descriptor.get && descriptor.get.toString().includes('arguments_')) {
+                return obj;
+            }
+            return _origDefineProperty(obj, prop, descriptor);
+        };
+        (window as any)._definePropertyPatched = true;
+    }
+
     const cvScript = document.createElement('script');
     cvScript.async = true;
-    cvScript.src = "https://docs.opencv.org/4.8.0/opencv.js";
+    cvScript.src = "https://docs.opencv.org/4.10.0/opencv.js";
     cvScript.onload = () => { try { (window as any).cvDidLoad = true; } catch(e){} };
     document.head.appendChild(cvScript);
 };

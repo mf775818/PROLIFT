@@ -34,17 +34,20 @@ export class OfflineVideoDecoder {
             }
           });
 
+          // Force software decoding to bypass iOS HEVC hardware Decoder bugs
+          const configWithPref: VideoDecoderConfig = { ...config, hardwareAcceleration: 'prefer-software' };
+
           // Check if HEVC or config is supported
-          VideoDecoder.isConfigSupported(config).then(support => {
+          VideoDecoder.isConfigSupported(configWithPref).then(support => {
             if (support.supported) {
               try {
-                this.decoder!.configure(config);
+                this.decoder!.configure(configWithPref);
                 isConfigured = true;
               } catch(e) {
                  reject(e);
               }
             } else {
-              reject(new Error('Video codec config not supported by this browser.'));
+              reject(new Error('Video codec config not supported by this browser in software mode.'));
             }
           });
         },
