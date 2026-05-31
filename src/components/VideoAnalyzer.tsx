@@ -484,14 +484,30 @@ class RTSSmoother {
 }
 
 class OpenCVTracker {
-    prevGray: any = null; prevPts: any = null; isInitialized: boolean = false; currentROI: any = null; clahe: any = null;
+    prevGray: any = null; 
+    prevPts: any = null; 
+    isInitialized: boolean = false; 
+    currentROI: any = null; 
+    clahe: any = null;
     
+    // --- 工業級光流脫鉤防止：動態追蹤參數 ---
+    initialPointCount: number = 0;
+    scoreHistory: number[] = [];
+    velocityTracker: { vX: number, vY: number }[] = []; 
+    initialTemplate: any = null;
 
     reset() {
         this.destroy();
         this.isInitialized = false;
         this.currentROI = null;
+        this.scoreHistory = [];
+        this.velocityTracker = [];
+        if (this.initialTemplate) {
+            this.initialTemplate.delete();
+            this.initialTemplate = null;
+        }
     }
+
     initialize(ctx: CanvasRenderingContext2D, width: number, height: number, roi: any) {
         const cv = g_cv || (window as any).cv;
         if (!cv || !cv.Mat) return;
@@ -509,7 +525,8 @@ class OpenCVTracker {
         const roiMat = gray.roi(roiRect);
         
         const corners = new cv.Mat(); 
-        cv.goodFeaturesToTrack(roiMat, corners, 100, 0.01, 5); // Increased points to 100 for robustness
+        // 提供更多的特徵點，提升高速運動下的容錯空間
+        cv.goodFeaturesToTrack(roiMat, corners, 150, 0.01, 5); 
         
         if (cv.cornerSubPix) { 
             try { 
@@ -518,7 +535,6 @@ class OpenCVTracker {
             } catch (e) {} 
         }
         
-        // Convert local ROI coordinates to global coordinates
         for (let i = 0; i < corners.rows; i++) { 
             corners.data32F[i * 2] += roi.x; 
             corners.data32F[i * 2 + 1] += roi.y; 
@@ -528,9 +544,96 @@ class OpenCVTracker {
         this.prevPts = corners; 
         this.currentROI = roi; 
         this.isInitialized = true; 
+        this.initialPointCount = corners.rows;
+        this.scoreHistory = [1.0, 1.0, 1.0]; // 初始信心滿分
+        this.velocityTracker = [];
+        if (this.initialTemplate) {
+            this.initialTemplate.delete();
+        }
+        this.initialTemplate = roiMat.clone(); // 儲存第一幀的 ROI 作為備用學習對象
         
         src.delete(); 
         roiMat.delete();
+    }
+
+    // --- 終極防線：全圖搜索與特徵重建 ---
+    fullFrameRecovery(grayFullMat: any) {
+        const cv = g_cv || (window as any).cv;
+        if (!cv || !cv.Mat || !this.initialTemplate || !this.currentROI) return false;
+
+        let result: any = null;
+        let rehooked = false;
+
+        try {
+            result = new cv.Mat();
+            
+            // 全局滑動窗口，評估分數最高點 (TM_CCOEFF_NORMED) - 使用第一幀模板
+            cv.matchTemplate(grayFullMat, this.initialTemplate, result, cv.TM_CCOEFF_NORMED);
+            const { maxLoc, maxVal } = cv.minMaxLoc(result);
+            
+            // 找到全圖中最匹配的位置 (放寬嚴格度，求接續)
+            if (maxVal > 0.35) { 
+                const newROI = {
+                    x: maxLoc.x,
+                    y: maxLoc.y,
+                    width: this.currentROI.width,
+                    height: this.currentROI.height
+                };
+                
+                // 放棄原失效軌跡，重新在全局最高分特徵位置嘗試掛載角點
+                rehooked = this.rehookFeatures(grayFullMat, newROI);
+                if (rehooked) {
+                    this.currentROI.x = newROI.x;
+                    this.currentROI.y = newROI.y;
+                }
+            }
+        } catch (e) {
+            console.warn("Full frame recovery failed", e);
+        } finally {
+            if (result) result.delete();
+        }
+        return rehooked;
+    }
+
+    // 當光流點過少，尋求重新掛載特徵點以接續軌跡
+    rehookFeatures(grayFullMat: any, predictedROI: any) {
+        const cv = g_cv || (window as any).cv;
+        const rx = Math.max(0, predictedROI.x);
+        const ry = Math.max(0, predictedROI.y);
+        const rw = Math.min(grayFullMat.cols - rx, predictedROI.width);
+        const rh = Math.min(grayFullMat.rows - ry, predictedROI.height);
+        
+        if (rw <= 0 || rh <= 0) return false;
+
+        const roiRect = new cv.Rect(rx, ry, rw, rh);
+        const roiMat = grayFullMat.roi(roiRect);
+        
+        const corners = new cv.Mat();
+        cv.goodFeaturesToTrack(roiMat, corners, 150, 0.01, 5);
+        
+        if (corners.rows < 5) {
+            corners.delete();
+            roiMat.delete();
+            return false; // Re-hook failure
+        }
+
+        if (cv.cornerSubPix) { 
+            try { 
+                const termCrit = new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 30, 0.01); 
+                cv.cornerSubPix(roiMat, corners, new cv.Size(5, 5), new cv.Size(-1, -1), termCrit); 
+            } catch (e) {} 
+        }
+
+        for (let i = 0; i < corners.rows; i++) { 
+            corners.data32F[i * 2] += rx; 
+            corners.data32F[i * 2 + 1] += ry; 
+        }
+
+        if (this.prevPts) this.prevPts.delete();
+        this.prevPts = corners;
+        this.initialPointCount = corners.rows;
+        roiMat.delete();
+        return true;
     }
 
     track(ctx: CanvasRenderingContext2D) {
@@ -546,13 +649,42 @@ class OpenCVTracker {
             
             cv.cvtColor(src, fullNextGray, cv.COLOR_RGBA2GRAY, 0); 
             this.clahe.apply(fullNextGray, fullNextGray);
+
+            // -- 方法論：隨軌跡評分判定 --
+            // 取前幾幀的平均評級，若分數低代表快脫鉤(高速或模糊)，放大金字塔與搜尋範圍(犧牲一點效能提升穩定性)
+            let avgScore = 1.0;
+            if (this.scoreHistory.length > 0) {
+                avgScore = this.scoreHistory.reduce((a, b) => a + b, 0) / this.scoreHistory.length;
+            }
+
+            let dynamicWinSize = 31;
+            let dynamicMaxLevel = 4;
+            let paddingArea = 50;
+
+            if (avgScore < 0.85) { dynamicWinSize = 45; dynamicMaxLevel = 5; paddingArea = 80; }
+            if (avgScore < 0.6) { dynamicWinSize = 65; dynamicMaxLevel = 6; paddingArea = 120; }
+            if (avgScore < 0.4) { dynamicWinSize = 85; dynamicMaxLevel = 7; paddingArea = 160; }
             
-            // --- INDUSTRIAL OPTIMIZATION: Unified Fixed ROI Padding ---
-            const paddingX = 50;
-            const paddingY = 50;
+            // 如果面臨斷連邊緣 (點數量極少)，執行終極尋回邏輯
+            const isCritical = this.prevPts.rows < 15;
+            if (isCritical) {
+                dynamicWinSize = 101; 
+                dynamicMaxLevel = 8; 
+                paddingArea = 200;
+            }
             
-            const rx = Math.max(0, this.currentROI.x - paddingX);
-            const ry = Math.max(0, this.currentROI.y - paddingY);
+            const paddingX = paddingArea;
+            const paddingY = paddingArea;
+            
+            // 若上幀有速度，我們可以進行慣性預測，修正 ROI 中心偏移，防脫鉤
+            let inertiaX = 0; let inertiaY = 0;
+            if (this.velocityTracker.length > 0) {
+                inertiaX = this.velocityTracker[this.velocityTracker.length - 1].vX;
+                inertiaY = this.velocityTracker[this.velocityTracker.length - 1].vY;
+            }
+
+            const rx = Math.max(0, this.currentROI.x + inertiaX - paddingX);
+            const ry = Math.max(0, this.currentROI.y + inertiaY - paddingY);
             const rw = Math.min(fullNextGray.cols - rx, this.currentROI.width + paddingX * 2);
             const rh = Math.min(fullNextGray.rows - ry, this.currentROI.height + paddingY * 2);
             
@@ -572,12 +704,12 @@ class OpenCVTracker {
             status = new cv.Mat();
             err = new cv.Mat();
             
-            // Unified Search Window across Desktop & Mobile
-            const winSize = new cv.Size(31, 31); 
-            const maxLevel = 4;
+            const winSize = new cv.Size(dynamicWinSize, dynamicWinSize); 
+            const maxLevel = dynamicMaxLevel;
             
             const termCrit = new cv.TermCriteria(cv.TermCriteria_EPS | cv.TermCriteria_COUNT, 20, 0.01);
 
+            // 原金字塔搜索邏輯固定
             cv.calcOpticalFlowPyrLK(
                 prevGrayRoi, nextGrayRoi, localPrevPts, localNextPts, status, err, winSize, maxLevel, 
                 termCrit
@@ -591,12 +723,14 @@ class OpenCVTracker {
                 nextPts.data32F[i * 2 + 1] += ry;
             }
 
-            // --- INDUSTRIAL FIX: Adaptive Point Pruning & GC Relief ---
+            // --- INDUSTRIAL FIX: Adaptive Point Pruning & Scoring ---
             const totalPoints = status.rows;
             const validX = new Float32Array(totalPoints);
             const validY = new Float32Array(totalPoints);
             const keptPointsData = new Float32Array(totalPoints * 2);
             let validCount = 0;
+
+            let meanDx = 0, meanDy = 0;
 
             for (let i = 0; i < totalPoints; i++) {
                 if (status.data[i] === 1) {
@@ -609,11 +743,14 @@ class OpenCVTracker {
                         const dx = p1x - p0x;
                         const dy = p1y - p0y;
                         
-                        if (dx * dx + dy * dy < 250000) {
+                        // 動態脫鉤過濾器：過大的隨機飄移剔除
+                        if (dx * dx + dy * dy < 400000) {
                             validX[validCount] = dx;
                             validY[validCount] = dy;
                             keptPointsData[validCount * 2] = p1x;
                             keptPointsData[validCount * 2 + 1] = p1y;
+                            meanDx += dx;
+                            meanDy += dy;
                             validCount++;
                         }
                     }
@@ -621,9 +758,56 @@ class OpenCVTracker {
             }
 
             if (validCount > 0) {
+                meanDx /= validCount;
+                meanDy /= validCount;
+
+                // 計算軌跡內聚力變異數 (Cohesion Variance)
+                let variance = 0;
+                for (let i = 0; i < validCount; i++) {
+                    const vX = validX[i] - meanDx;
+                    const vY = validY[i] - meanDy;
+                    variance += (vX * vX + vY * vY);
+                }
+                variance /= validCount;
+
+                // 評分計算 (0.0 ~ 1.0)
+                const pointRetentionScore = validCount / Math.max(1, this.initialPointCount);
+                const cohesionScore = Math.max(0, 1.0 - (variance / 800.0)); 
+                const frameScore = (pointRetentionScore * 0.4) + (cohesionScore * 0.6);
+
+                this.scoreHistory.push(frameScore);
+                if (this.scoreHistory.length > 5) this.scoreHistory.shift(); // 保留5幀分析
+            }
+
+            // 尋回接續階段：如果光流找不到了，或分數極低斷連
+            if (validCount < 10 && avgScore < 0.3) {
+                const predictedROI = {
+                    x: this.currentROI.x + inertiaX * 2,
+                    y: this.currentROI.y + inertiaY * 2,
+                    width: this.currentROI.width,
+                    height: this.currentROI.height
+                };
+                
+                let rehookSuccess = this.rehookFeatures(fullNextGray, predictedROI);
+                
+                if (!rehookSuccess) {
+                    // --- 終極防線：全圖搜索追蹤 (關閉局部光流，使用 TM_CCOEFF_NORMED 尋找上一幀特徵) ---
+                    rehookSuccess = this.fullFrameRecovery(fullNextGray);
+                }
+                
+                if (rehookSuccess) {
+                    this.scoreHistory = [0.5, 0.5]; // 重設過渡自信度，下一幀即恢復金字塔光流
+                    if (this.prevGray) this.prevGray.delete();
+                    this.prevGray = fullNextGray;
+                    fullNextGray = null;
+                    return this.currentROI ? { ...this.currentROI } : null; // 更新外部的畫布綠框
+                } else {
+                    this.isInitialized = false;
+                }
+            } else if (validCount > 0) {
                 const xSub = validX.subarray(0, validCount);
                 const ySub = validY.subarray(0, validCount);
-                xSub.sort(); // TypedArray sort is inherently numeric
+                xSub.sort(); 
                 ySub.sort();
                 const medianX = xSub[Math.floor(validCount / 2)];
                 const medianY = ySub[Math.floor(validCount / 2)];
@@ -632,6 +816,10 @@ class OpenCVTracker {
                     this.currentROI.x += medianX;
                     this.currentROI.y += medianY;
                 }
+
+                // 紀錄速度用於慣性預測
+                this.velocityTracker.push({ vX: medianX, vY: medianY });
+                if (this.velocityTracker.length > 3) this.velocityTracker.shift();
 
                 if (this.prevPts) this.prevPts.delete();
                 newPtsMat = new cv.Mat(validCount, 1, cv.CV_32FC2);
@@ -642,7 +830,7 @@ class OpenCVTracker {
                 this.prevPts = newPtsMat;
                 if (this.prevGray) this.prevGray.delete();
                 this.prevGray = fullNextGray;
-                fullNextGray = null; // Prevent deletion in finally
+                fullNextGray = null; 
             } else {
                 this.isInitialized = false;
             }
@@ -672,7 +860,6 @@ class OpenCVTracker {
         } catch (e) {
             console.warn("OpenCV GC Warning:", e);
         } finally {
-            // 必須將參照設為 null，切斷 WebAssembly 綁定，讓 JS GC 能夠回收
             this.prevGray = null;
             this.prevPts = null;
             this.clahe = null;
