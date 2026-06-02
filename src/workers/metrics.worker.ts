@@ -8,7 +8,6 @@ import { OneEuroFilter } from '../lib/hpc/OneEuroFilter';
 // Prevent TypeScript from complaining about `self`
 const _self = self as unknown as Worker;
 
-let metricsBuffer: LiftMetricsBuffer | null = null;
 const calibrationEngine = new CalibrationEngineHPC();
 let trackingBuffer: TrackingBuffer | null = null;
 const physicsEngine = new PhysicsEngineHPC();
@@ -19,7 +18,6 @@ let oneEuroAnkle: OneEuroFilter | null = null;
 let oneEuroBack: OneEuroFilter | null = null;
 
 let barbellMass = 20;
-
 let lastTime = 0;
 
 // Pre-allocated array for reading transformed coords
@@ -32,16 +30,11 @@ _self.onmessage = (event: MessageEvent) => {
     const { type, payload } = event.data;
 
     switch (type) {
-        case 'INIT_SAB': {
-            // Receive SharedArrayBuffer from Main Thread Zero-Copy
-            const sab = (payload?.sab || payload) as SharedArrayBuffer;
+        case 'INIT_WORKER': {
             barbellMass = payload?.barbellMass || 20;
-            metricsBuffer = new LiftMetricsBuffer(1000, 11, sab);
-            trackingBuffer = new TrackingBuffer(1000); // 獨立的內部 Track Buffer
+            trackingBuffer = new TrackingBuffer(5000); // 獨立的內部 Track Buffer
             
             // RKF Filter for Barbell Y (Height):
-            // Default parameters: processNoise=0.001, measureNoise=0.01
-            // Provides built-in Gating (Outlier Rejection) to handle video jump noise.
             rkfY = new RobustKalmanFilter(0.001, 0.01); 
             oneEuroKnee = new OneEuroFilter(1.0, 0.01, 1.0);
             oneEuroHip = new OneEuroFilter(1.0, 0.01, 1.0);
@@ -49,76 +42,66 @@ _self.onmessage = (event: MessageEvent) => {
             oneEuroBack = new OneEuroFilter(1.0, 0.01, 1.0);
             
             lastTime = 0;
-            console.log("Worker: Mounted SharedArrayBuffer with Industrial 1€ + Sigmoid pipeline.");
+            console.log("Worker: Pipeline initialized.");
             break;
         }
 
         case 'CALIBRATE': {
-            // payload = { srcPts: number[], dstPts: number[] }
-            calibrationEngine.calibrate(payload.srcPts, payload.dstPts);
+            // payload = { hMatrix: number[] }
+            calibrationEngine.updateHomography(payload.hMatrix);
             break;
         }
 
         case 'PROCESS_FRAME': {
-            if (!metricsBuffer || !trackingBuffer || !rkfY) return;
-            
-            const { time, pixelX, pixelY, knee, hip, ankle, back } = payload;
-
-            // 1. 即時轉換從 Pixels 空間到 3D Physical Space
-            calibrationEngine.applyTransform(physicalCoords, pixelX, pixelY);
-            const physX = physicalCoords[0];
-            const rawPhysY = physicalCoords[1];
-
-            // 更新 Last Valid Value 防守 0 值陷阱
-            if (knee !== undefined && knee !== null && !isNaN(knee)) lastValidAngles.knee = knee;
-            if (hip !== undefined && hip !== null && !isNaN(hip)) lastValidAngles.hip = hip;
-            if (ankle !== undefined && ankle !== null && !isNaN(ankle)) lastValidAngles.ankle = ankle;
-            if (back !== undefined && back !== null && !isNaN(back)) lastValidAngles.back = back;
-
-            const dt = lastTime > 0 ? (time - lastTime) : (1/30);
-            lastTime = time;
-            
-            const smoothPhysY = rkfY.filter(rawPhysY, dt);
-            const sKnee = oneEuroKnee!.filter(lastValidAngles.knee, dt);
-            const sHip = oneEuroHip!.filter(lastValidAngles.hip, dt);
-            const sAnkle = oneEuroAnkle!.filter(lastValidAngles.ankle, dt);
-            const sBack = oneEuroBack!.filter(lastValidAngles.back, dt);
-
-            trackingBuffer.push(physX, smoothPhysY, 0, time, sKnee, sHip, sAnkle, sBack);
-
-            // 即時 O(1) 動力學估算 (利用差分)
-            const idx = trackingBuffer.head - 1;
-            let vel = 0, accel = 0, force = 0, power = 0;
-            
-            if (idx >= 1) {
-                const prevY = trackingBuffer.y[idx - 1];
-                vel = (smoothPhysY - prevY) / dt; // 簡易即時速度
-                // 力與功的即時估算 (假設等速)
-                force = barbellMass * 9.81; 
-                power = force * Math.max(0, vel); 
-            }
-
-            // 直接推入 SAB 供給 UI 即時渲染
-            metricsBuffer.push(time, physX, smoothPhysY, vel, accel, force, power, sKnee, sHip, sAnkle, sBack);
+            if (!trackingBuffer || !rkfY) return;
+            // ... wait, if we do frame by frame processing in the worker, the main thread needs to wait?
+            // Actually, for heavy lifting, the worker can do the full O(N) pass at the end instead!
             break;
         }
 
         case 'FINISH_VIDEO': {
-            // 離線 O(N) 雙向濾波精算
-            if (!trackingBuffer) return;
+            // 離線 O(N) 雙向濾波精算 & 動力學計算
+            const trackingData = payload.trackingData; // { x: Float64Array, y: ..., head: number }
+            barbellMass = payload.barbellMass;
+
+            if (!trackingData || trackingData.head === 0) return;
             console.log("Worker: Video Finished. Running O(N) Offline Butterworth Pass...");
             
-            const outKinetics = new Float32Array(trackingBuffer.head * 4);
-            const outKnee = new Float32Array(trackingBuffer.head);
-            const outHip = new Float32Array(trackingBuffer.head);
-            const outAnkle = new Float32Array(trackingBuffer.head);
-            const outBack = new Float32Array(trackingBuffer.head);
+            // Reconstruct TrackingBuffer locally
+            const tb = new TrackingBuffer(trackingData.head);
+            for(let i=0; i<trackingData.head; i++) {
+                 tb.push(
+                     trackingData.x[i], trackingData.y[i], 0, trackingData.t[i],
+                     trackingData.kneeAngle[i], trackingData.hipAngle[i], trackingData.ankleAngle[i], trackingData.backAngle[i],
+                     trackingData.lKneeAngle[i], trackingData.rKneeAngle[i], trackingData.lHipAngle[i], trackingData.rHipAngle[i],
+                     trackingData.lAnkleAngle[i], trackingData.rAnkleAngle[i]
+                 );
+            }
 
-            physicsEngine.computeKinetics(trackingBuffer, outKinetics, barbellMass);
-            physicsEngine.smoothAngles(trackingBuffer, outKnee, outHip, outAnkle, outBack);
+            const outKinetics = new Float32Array(tb.head * 4);
+            const outKnee = new Float32Array(tb.head);
+            const outHip = new Float32Array(tb.head);
+            const outAnkle = new Float32Array(tb.head);
+            const outBack = new Float32Array(tb.head);
+            const outLKnee = new Float32Array(tb.head);
+            const outRKnee = new Float32Array(tb.head);
+            const outLHip = new Float32Array(tb.head);
+            const outRHip = new Float32Array(tb.head);
+            const outLAnkle = new Float32Array(tb.head);
+            const outRAnkle = new Float32Array(tb.head);
 
-            // 這裡可以選擇將數據回寫 SAB，或者透過 postMessage 傳給主執行緒
-            _self.postMessage({ type: 'OFFLINE_ANALYSIS_COMPLETE', head: trackingBuffer.head });
+            physicsEngine.computeKinetics(tb, outKinetics, barbellMass);
+            physicsEngine.smoothAngles(tb, outKnee, outHip, outAnkle, outBack, outLKnee, outRKnee, outLHip, outRHip, outLAnkle, outRAnkle);
+
+            _self.postMessage({ 
+                type: 'OFFLINE_ANALYSIS_COMPLETE', 
+                kinetics: outKinetics,
+                angles: {
+                    knee: outKnee, hip: outHip, ankle: outAnkle, back: outBack,
+                    lKnee: outLKnee, rKnee: outRKnee, lHip: outLHip, rHip: outRHip,
+                    lAnkle: outLAnkle, rAnkle: outRAnkle
+                }
+            });
             break;
         }
     }

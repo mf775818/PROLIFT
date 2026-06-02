@@ -521,7 +521,12 @@ class OpenCVTracker {
         this.clahe = new cv.CLAHE(2.0, new cv.Size(8, 8)); 
         this.clahe.apply(gray, gray);
         
-        const roiRect = new cv.Rect(roi.x, roi.y, roi.width, roi.height); 
+        const rx = Math.max(0, Math.min(gray.cols - 1, Math.floor(roi.x)));
+        const ry = Math.max(0, Math.min(gray.rows - 1, Math.floor(roi.y)));
+        const rw = Math.max(1, Math.min(gray.cols - rx, Math.floor(roi.width)));
+        const rh = Math.max(1, Math.min(gray.rows - ry, Math.floor(roi.height)));
+        
+        const roiRect = new cv.Rect(rx, ry, rw, rh); 
         const roiMat = gray.roi(roiRect);
         
         const corners = new cv.Mat(); 
@@ -598,10 +603,10 @@ class OpenCVTracker {
     // 當光流點過少，尋求重新掛載特徵點以接續軌跡
     rehookFeatures(grayFullMat: any, predictedROI: any) {
         const cv = g_cv || (window as any).cv;
-        const rx = Math.max(0, predictedROI.x);
-        const ry = Math.max(0, predictedROI.y);
-        const rw = Math.min(grayFullMat.cols - rx, predictedROI.width);
-        const rh = Math.min(grayFullMat.rows - ry, predictedROI.height);
+        const rx = Math.max(0, Math.min(grayFullMat.cols - 1, Math.floor(predictedROI.x)));
+        const ry = Math.max(0, Math.min(grayFullMat.rows - 1, Math.floor(predictedROI.y)));
+        const rw = Math.max(1, Math.min(grayFullMat.cols - rx, Math.floor(predictedROI.width)));
+        const rh = Math.max(1, Math.min(grayFullMat.rows - ry, Math.floor(predictedROI.height)));
         
         if (rw <= 0 || rh <= 0) return false;
 
@@ -683,10 +688,10 @@ class OpenCVTracker {
                 inertiaY = this.velocityTracker[this.velocityTracker.length - 1].vY;
             }
 
-            const rx = Math.max(0, this.currentROI.x + inertiaX - paddingX);
-            const ry = Math.max(0, this.currentROI.y + inertiaY - paddingY);
-            const rw = Math.min(fullNextGray.cols - rx, this.currentROI.width + paddingX * 2);
-            const rh = Math.min(fullNextGray.rows - ry, this.currentROI.height + paddingY * 2);
+            const rx = Math.max(0, Math.min(fullNextGray.cols - 1, Math.floor(this.currentROI.x + inertiaX - paddingX)));
+            const ry = Math.max(0, Math.min(fullNextGray.rows - 1, Math.floor(this.currentROI.y + inertiaY - paddingY)));
+            const rw = Math.max(1, Math.min(fullNextGray.cols - rx, Math.floor(this.currentROI.width + paddingX * 2)));
+            const rh = Math.max(1, Math.min(fullNextGray.rows - ry, Math.floor(this.currentROI.height + paddingY * 2)));
             
             const roiRect = new cv.Rect(rx, ry, rw, rh);
             
@@ -898,9 +903,10 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
   const sharedMetricsBufferRef = useRef<any | null>(null);
 
   useEffect(() => {
-    // Initialize Worker with true real-time Sab capabilities
+    // Initialize Worker with standard postMessage capabilities (SAB disabled by default)
     try {
         const worker = new Worker(new URL('../workers/metrics.worker.ts', import.meta.url), { type: 'module' });
+        worker.postMessage({ type: 'INIT_WORKER', payload: { barbellMass: barbellMassRef.current || 20 } });
         metricsWorkerRef.current = worker;
         console.log("[Worker] Metrics pipeline initialized.");
     } catch (e) {
@@ -1853,6 +1859,7 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     // 2. 效率優化核心：降低 MediaPipe 解析度。既然有光流法算 ROI，MediaPipe 只需大略追蹤身體即可。
     const step = 0.033;
     let currentTime = 0;
+    let lastMediaTime = -1;
     
     // Safety break for extremely long videos or infinite loops
     const maxFrames = Math.ceil(duration / step) + 50;
@@ -1879,34 +1886,19 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     if (typeof model.reset === 'function') {
         await model.reset();
     }
-    let prevFrameData: Uint32Array | null = null;
     let fallbackSeekedFired = false;
     
-    // Fast Hash Function for comparing image changes
-    const computeFrameHash = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
-        if (!w || !h) return 0;
-        try {
-            // Sample a 32x32 center region for extreme performance
-            const sx = Math.max(0, Math.floor(w/2 - 16));
-            const sy = Math.max(0, Math.floor(h/2 - 16));
-            const imgData = ctx.getImageData(sx, sy, 32, 32);
-            let buf = new Uint32Array(imgData.data.buffer);
-            let sum = 0;
-            for(let i=0; i<buf.length; i+=4) sum += buf[i];
-            return sum;
-        } catch {
-            return 0;
-        }
-    };
-
+    // Fast Hash Function removed because we now use industrial-grade RVFC metadata validation
+    
+    // Industrial Grade RVFC sync function (eliminates iOS duplicate decoded frame bugs at the fundamental level)
     const waitForFrame = (targetTime: number) => new Promise<void>((resolve) => {
        let resolved = false;
+       let rvfcId: number | null = null;
        
        const seekHandler = () => { 
            if (resolved) return;
            
            if ('requestVideoFrameCallback' in vid) {
-               // Prefer RVFC, just note that seeked fired to avoid timeout
                fallbackSeekedFired = true;
            } else {
                resolved = true;
@@ -1923,20 +1915,33 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
        }
 
        if ('requestVideoFrameCallback' in vid) {
-           const rvfcCallback = () => {
-               if (!resolved) {
-                   resolved = true;
-                   vid.removeEventListener('seeked', seekHandler);
-                   resolve();
+           const rvfcCallback = (now: number, metadata: any) => {
+               if (resolved) return;
+
+               // Core Fix: Validate if Safari actually painted a new frame buffer
+               // by comparing the presentation metadata mediaTime. 
+               if (lastMediaTime >= 0 && metadata.mediaTime <= lastMediaTime && Math.abs(targetTime - metadata.mediaTime) > 0.02) {
+                   // Frame buffer hasn't been updated to the requested seek time yet.
+                   // Ask browser to notify us again on the NEXT paint cycle.
+                   rvfcId = (vid as any).requestVideoFrameCallback(rvfcCallback);
+                   return;
                }
+
+               lastMediaTime = metadata.mediaTime;
+               resolved = true;
+               vid.removeEventListener('seeked', seekHandler);
+               resolve();
            };
-           (vid as any).requestVideoFrameCallback(rvfcCallback);
+           rvfcId = (vid as any).requestVideoFrameCallback(rvfcCallback);
        }
        
-       // Timeout 發生時拔除 Listener
+       // Fallback Timeout 
        setTimeout(() => { 
            if (!resolved) { 
                resolved = true;
+               if (rvfcId !== null && 'cancelVideoFrameCallback' in vid) {
+                   (vid as any).cancelVideoFrameCallback(rvfcId);
+               }
                vid.removeEventListener('seeked', seekHandler);
                resolve(); 
            } 
@@ -1997,18 +2002,6 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
            if (ctx && analysisCanvas.width > 0 && analysisCanvas.height > 0) {
              ctx.drawImage(vid, 0, 0, analysisCanvas.width, analysisCanvas.height);
              
-             // 工業級優化：幀驗證迴圈 (防止 iOS 假穩定)
-             const currentHash = computeFrameHash(ctx, analysisCanvas.width, analysisCanvas.height);
-             const isDuplicateFrame = (currentTime > 0) && (currentHash === prevFrameData);
-             prevFrameData = currentHash as any;
-
-             if (isDuplicateFrame && fallbackSeekedFired) {
-                 console.warn("Skipped duplicate decoded frame (iOS Safari bug mitigaton), Time:", currentTime);
-                 setProgress(Math.max(0, Math.min(100, Math.round((currentTime / duration) * 100))));
-                 currentTime += step; 
-                 continue; // Completely drop the frame and advance the video time
-             }
-
              if (currentTime > 0 && cvTracker.isInitialized) {
                  try {
                     const res = cvTracker.track(ctx);
@@ -2088,19 +2081,19 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
     }
     
     if (isAnalyzingRef.current) {
-        finalizeAnalysis();
+        await finalizeAnalysis();
         isAnalyzingRef.current = false;
     }
   };
 
-  const finalizeAnalysis = () => {
-    const raw = rawDataRef.current.sort((a, b) => a.index - b.index);
-    if (raw.length === 0) { 
-        console.warn("Finalize Analysis: No landmarks detected.");
-        setAnalysisState(AnalysisState.IDLE); 
-        onAnalysisCompleteRef.current([]);
-        return; 
-    }
+    const finalizeAnalysis = async () => {
+        const raw = rawDataRef.current.sort((a, b) => a.index - b.index);
+        if (raw.length === 0) { 
+            console.warn("Finalize Analysis: No landmarks detected.");
+            setAnalysisState(AnalysisState.IDLE); 
+            onAnalysisCompleteRef.current([]);
+            return; 
+        }
     
     // Eliminate landmark noise/jump offsets before processing further
     cleanSkeletonData(raw);
@@ -2202,33 +2195,36 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         // --- 工業級 DLT 仿射比例還原補償 (Anisotropic Aspect Ratio Compensation) ---
         // 解決 45度角拍攝時，就算校正了平面，X軸 (深度方向) 依然維持原像素壓縮而導致位移低估的問題。
         // 方法論：槓鈴片在現實中是完美的圓 (長寬比 1:1)。
-        // 我們將使用者框選的槓鈴片 ROI 透視到 DLT 空間，再強迫它的物理長寬相等，從而倒推出 X 軸真實的放大倍率！
+        // 改良：透視變換不保留中點，投影偽極點會導致 arRatio 接近 1.0 (橢圓極點修正未完整整合)。
+        // 故需將外接四邊形的四個角轉換，取其 Bounding Box 來真實還原 DLT 空間的長寬比。
         if (success && normalizedROI && normalizedROI.width > 0 && normalizedROI.height > 0) {
-            const centerX = normalizedROI.x + normalizedROI.width / 2;
-            const centerY = normalizedROI.y + normalizedROI.height / 2;
             
-            // 定義橢圓的上下左右四個邊界點
-            const topPt = new Float64Array([centerX * canvasW, normalizedROI.y * canvasH, 1]);
-            const btmPt = new Float64Array([centerX * canvasW, (normalizedROI.y + normalizedROI.height) * canvasH, 1]);
-            const leftPt = new Float64Array([normalizedROI.x * canvasW, centerY * canvasH, 1]);
-            const rightPt = new Float64Array([(normalizedROI.x + normalizedROI.width) * canvasW, centerY * canvasH, 1]);
+            const tl = new Float64Array([normalizedROI.x * canvasW, normalizedROI.y * canvasH, 1]);
+            const tr = new Float64Array([(normalizedROI.x + normalizedROI.width) * canvasW, normalizedROI.y * canvasH, 1]);
+            const bl = new Float64Array([normalizedROI.x * canvasW, (normalizedROI.y + normalizedROI.height) * canvasH, 1]);
+            const br = new Float64Array([(normalizedROI.x + normalizedROI.width) * canvasW, (normalizedROI.y + normalizedROI.height) * canvasH, 1]);
 
-            const ct = new Float64Array(3); const cb = new Float64Array(3);
-            const cl = new Float64Array(3); const cr = new Float64Array(3);
+            const ctl = new Float64Array(3); const ctr = new Float64Array(3);
+            const cbl = new Float64Array(3); const cbr = new Float64Array(3);
             
-            perspectiveMath.multiplyMat3Vec3(ct, hMatrix, topPt);
-            perspectiveMath.multiplyMat3Vec3(cb, hMatrix, btmPt);
-            perspectiveMath.multiplyMat3Vec3(cl, hMatrix, leftPt);
-            perspectiveMath.multiplyMat3Vec3(cr, hMatrix, rightPt);
+            perspectiveMath.multiplyMat3Vec3(ctl, hMatrix, tl);
+            perspectiveMath.multiplyMat3Vec3(ctr, hMatrix, tr);
+            perspectiveMath.multiplyMat3Vec3(cbl, hMatrix, bl);
+            perspectiveMath.multiplyMat3Vec3(cbr, hMatrix, br);
 
-            const plateDLTHeight = Math.abs((cb[1] / cb[2]) - (ct[1] / ct[2]));
-            const plateDLTWidth = Math.abs((cr[0] / cr[2]) - (cl[0] / cl[2]));
+            const ptl_x = ctl[0]/ctl[2], ptl_y = ctl[1]/ctl[2];
+            const ptr_x = ctr[0]/ctr[2], ptr_y = ctr[1]/ctr[2];
+            const pbl_x = cbl[0]/cbl[2], pbl_y = cbl[1]/cbl[2];
+            const pbr_x = cbr[0]/cbr[2], pbr_y = cbr[1]/cbr[2];
+
+            const plateDLTWidth = Math.max(ptl_x, ptr_x, pbl_x, pbr_x) - Math.min(ptl_x, ptr_x, pbl_x, pbr_x);
+            const plateDLTHeight = Math.max(ptl_y, ptr_y, pbl_y, pbr_y) - Math.min(ptl_y, ptr_y, pbl_y, pbr_y);
 
             if (plateDLTWidth > 0 && plateDLTHeight > 0) {
                 // 物理真值比例 (Aspect Ratio) 補償係數
-                const arRatio = plateDLTHeight / plateDLTWidth;
+                const arRatio = Math.max(1.0, plateDLTHeight / plateDLTWidth); // 確保不會過度壓縮
                 
-                // 動態延展或壓縮目標平面的寬度，以匹配相機變形
+                // 動態延展目標平面的寬度，以匹配相機變形
                 w = w * arRatio;
                 
                 // 重新計算真正等距、等向的 Homography 矩陣
@@ -2403,28 +2399,81 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
         trackingBuffer.y[i] /= 1000.0;
     }
 
-    const outKinetics = new Float32Array(n * 4);
-    const outKnee = new Float32Array(n);
-    const outHip = new Float32Array(n);
-    const outAnkle = new Float32Array(n);
-    const outBack = new Float32Array(n);
-    const outLKnee = new Float32Array(n);
-    const outRKnee = new Float32Array(n);
-    const outLHip = new Float32Array(n);
-    const outRHip = new Float32Array(n);
-    const outLAnkle = new Float32Array(n);
-    const outRAnkle = new Float32Array(n);
-    const physicsEngine = new PhysicsEngineHPC(); // Create temporary for full pass
-    
-    // 批次物理動力計算 (O(n) Zero-Allocation)
-    physicsEngine.computeKinetics(trackingBuffer, outKinetics, barbellMassRef.current);
-    
-    // --- NEW: Industrial Grade Angle Smoothing (OneEuro + Sigmoid) ---
-    physicsEngine.smoothAngles(
-        trackingBuffer, 
-        outKnee, outHip, outAnkle, outBack,
-        outLKnee, outRKnee, outLHip, outRHip, outLAnkle, outRAnkle
-    );
+    // == 4. Dispatch to Web Worker for O(N) calculations ==
+    const worker = metricsWorkerRef.current;
+    let outKinetics: Float32Array;
+    let outKnee: Float32Array;
+    let outHip: Float32Array;
+    let outAnkle: Float32Array;
+    let outBack: Float32Array;
+    let outLKnee: Float32Array;
+    let outRKnee: Float32Array;
+    let outLHip: Float32Array;
+    let outRHip: Float32Array;
+    let outLAnkle: Float32Array;
+    let outRAnkle: Float32Array;
+
+    if (worker) {
+        console.log("Dispatching heavy physics pipeline to Worker...");
+        const response = await new Promise<any>((resolve, reject) => {
+            const tempListener = (e: MessageEvent) => {
+                if (e.data.type === 'OFFLINE_ANALYSIS_COMPLETE') {
+                    worker.removeEventListener('message', tempListener);
+                    worker.removeEventListener('error', errorListener);
+                    resolve(e.data);
+                }
+            };
+            const errorListener = (e: ErrorEvent) => {
+                worker.removeEventListener('message', tempListener);
+                worker.removeEventListener('error', errorListener);
+                reject(e);
+            };
+            worker.addEventListener('message', tempListener);
+            worker.addEventListener('error', errorListener);
+            worker.postMessage({
+                type: 'FINISH_VIDEO',
+                payload: {
+                    trackingData: {
+                        head: trackingBuffer.head,
+                        x: trackingBuffer.x, y: trackingBuffer.y, t: trackingBuffer.t,
+                        kneeAngle: trackingBuffer.kneeAngle, hipAngle: trackingBuffer.hipAngle, ankleAngle: trackingBuffer.ankleAngle, backAngle: trackingBuffer.backAngle,
+                        lKneeAngle: trackingBuffer.lKneeAngle, rKneeAngle: trackingBuffer.rKneeAngle, 
+                        lHipAngle: trackingBuffer.lHipAngle, rHipAngle: trackingBuffer.rHipAngle,
+                        lAnkleAngle: trackingBuffer.lAnkleAngle, rAnkleAngle: trackingBuffer.rAnkleAngle
+                    },
+                    barbellMass: barbellMassRef.current
+                }
+            });
+        });
+
+        outKinetics = response.kinetics;
+        outKnee = response.angles.knee;
+        outHip = response.angles.hip;
+        outAnkle = response.angles.ankle;
+        outBack = response.angles.back;
+        outLKnee = response.angles.lKnee;
+        outRKnee = response.angles.rKnee;
+        outLHip = response.angles.lHip;
+        outRHip = response.angles.rHip;
+        outLAnkle = response.angles.lAnkle;
+        outRAnkle = response.angles.rAnkle;
+    } else {
+        console.warn("Worker not found, running heavy physics pipeline on Main Thread...");
+        outKinetics = new Float32Array(n * 4);
+        outKnee = new Float32Array(n);
+        outHip = new Float32Array(n);
+        outAnkle = new Float32Array(n);
+        outBack = new Float32Array(n);
+        outLKnee = new Float32Array(n);
+        outRKnee = new Float32Array(n);
+        outLHip = new Float32Array(n);
+        outRHip = new Float32Array(n);
+        outLAnkle = new Float32Array(n);
+        outRAnkle = new Float32Array(n);
+        const physicsEngine = new PhysicsEngineHPC(); 
+        physicsEngine.computeKinetics(trackingBuffer, outKinetics, barbellMassRef.current);
+        physicsEngine.smoothAngles(trackingBuffer, outKnee, outHip, outAnkle, outBack, outLKnee, outRKnee, outLHip, outRHip, outLAnkle, outRAnkle);
+    }
 
     const metrics: LiftMetrics[] = []; let maxVel = 0;
 
