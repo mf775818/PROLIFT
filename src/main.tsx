@@ -36,7 +36,8 @@ const injectScripts = () => {
 
     const cvScript = document.createElement('script');
     cvScript.async = true;
-    cvScript.src = "https://docs.opencv.org/4.10.0/opencv.js";
+    cvScript.src = "/js/opencv.js";
+    cvScript.crossOrigin = "anonymous";
     cvScript.onload = () => { try { (window as any).cvDidLoad = true; } catch(e){} };
     document.head.appendChild(cvScript);
 };

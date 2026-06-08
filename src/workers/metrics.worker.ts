@@ -64,7 +64,19 @@ _self.onmessage = (event: MessageEvent) => {
             const trackingData = payload.trackingData; // { x: Float64Array, y: ..., head: number }
             barbellMass = payload.barbellMass;
 
-            if (!trackingData || trackingData.head === 0) return;
+            if (!trackingData || trackingData.head === 0) {
+                console.warn("Worker: No tracking data received, returning empty result.");
+                _self.postMessage({ 
+                    type: 'OFFLINE_ANALYSIS_COMPLETE', 
+                    kinetics: new Float32Array(0),
+                    angles: {
+                        knee: new Float32Array(0), hip: new Float32Array(0), ankle: new Float32Array(0), back: new Float32Array(0),
+                        lKnee: new Float32Array(0), rKnee: new Float32Array(0), lHip: new Float32Array(0), rHip: new Float32Array(0),
+                        lAnkle: new Float32Array(0), rAnkle: new Float32Array(0)
+                    }
+                });
+                return;
+            }
             console.log("Worker: Video Finished. Running O(N) Offline Butterworth Pass...");
             
             // Reconstruct TrackingBuffer locally

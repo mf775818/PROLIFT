@@ -2415,48 +2415,78 @@ export const VideoAnalyzer: React.FC<VideoAnalyzerProps> = React.memo(({
 
     if (worker) {
         console.log("Dispatching heavy physics pipeline to Worker...");
-        const response = await new Promise<any>((resolve, reject) => {
-            const tempListener = (e: MessageEvent) => {
-                if (e.data.type === 'OFFLINE_ANALYSIS_COMPLETE') {
+        try {
+            const response = await new Promise<any>((resolve, reject) => {
+                let timeoutId: any;
+                
+                const tempListener = (e: MessageEvent) => {
+                    if (e.data.type === 'OFFLINE_ANALYSIS_COMPLETE') {
+                        clearTimeout(timeoutId);
+                        worker.removeEventListener('message', tempListener);
+                        worker.removeEventListener('error', errorListener);
+                        resolve(e.data);
+                    }
+                };
+                const errorListener = (e: ErrorEvent) => {
+                    clearTimeout(timeoutId);
                     worker.removeEventListener('message', tempListener);
                     worker.removeEventListener('error', errorListener);
-                    resolve(e.data);
-                }
-            };
-            const errorListener = (e: ErrorEvent) => {
-                worker.removeEventListener('message', tempListener);
-                worker.removeEventListener('error', errorListener);
-                reject(e);
-            };
-            worker.addEventListener('message', tempListener);
-            worker.addEventListener('error', errorListener);
-            worker.postMessage({
-                type: 'FINISH_VIDEO',
-                payload: {
-                    trackingData: {
-                        head: trackingBuffer.head,
-                        x: trackingBuffer.x, y: trackingBuffer.y, t: trackingBuffer.t,
-                        kneeAngle: trackingBuffer.kneeAngle, hipAngle: trackingBuffer.hipAngle, ankleAngle: trackingBuffer.ankleAngle, backAngle: trackingBuffer.backAngle,
-                        lKneeAngle: trackingBuffer.lKneeAngle, rKneeAngle: trackingBuffer.rKneeAngle, 
-                        lHipAngle: trackingBuffer.lHipAngle, rHipAngle: trackingBuffer.rHipAngle,
-                        lAnkleAngle: trackingBuffer.lAnkleAngle, rAnkleAngle: trackingBuffer.rAnkleAngle
-                    },
-                    barbellMass: barbellMassRef.current
-                }
+                    reject(e);
+                };
+                
+                timeoutId = setTimeout(() => {
+                    worker.removeEventListener('message', tempListener);
+                    worker.removeEventListener('error', errorListener);
+                    console.warn("Worker timeout! Falling back to Main Thread execution...");
+                    reject(new Error("WORKER_TIMEOUT"));
+                }, 10000); // 10s maximum processing time for O(N) physics
+                
+                worker.addEventListener('message', tempListener);
+                worker.addEventListener('error', errorListener);
+                worker.postMessage({
+                    type: 'FINISH_VIDEO',
+                    payload: {
+                        trackingData: {
+                            head: trackingBuffer.head,
+                            x: trackingBuffer.x, y: trackingBuffer.y, t: trackingBuffer.t,
+                            kneeAngle: trackingBuffer.kneeAngle, hipAngle: trackingBuffer.hipAngle, ankleAngle: trackingBuffer.ankleAngle, backAngle: trackingBuffer.backAngle,
+                            lKneeAngle: trackingBuffer.lKneeAngle, rKneeAngle: trackingBuffer.rKneeAngle, 
+                            lHipAngle: trackingBuffer.lHipAngle, rHipAngle: trackingBuffer.rHipAngle,
+                            lAnkleAngle: trackingBuffer.lAnkleAngle, rAnkleAngle: trackingBuffer.rAnkleAngle
+                        },
+                        barbellMass: barbellMassRef.current
+                    }
+                });
             });
-        });
 
-        outKinetics = response.kinetics;
-        outKnee = response.angles.knee;
-        outHip = response.angles.hip;
-        outAnkle = response.angles.ankle;
-        outBack = response.angles.back;
-        outLKnee = response.angles.lKnee;
-        outRKnee = response.angles.rKnee;
-        outLHip = response.angles.lHip;
-        outRHip = response.angles.rHip;
-        outLAnkle = response.angles.lAnkle;
-        outRAnkle = response.angles.rAnkle;
+            outKinetics = response.kinetics;
+            outKnee = response.angles.knee;
+            outHip = response.angles.hip;
+            outAnkle = response.angles.ankle;
+            outBack = response.angles.back;
+            outLKnee = response.angles.lKnee;
+            outRKnee = response.angles.rKnee;
+            outLHip = response.angles.lHip;
+            outRHip = response.angles.rHip;
+            outLAnkle = response.angles.lAnkle;
+            outRAnkle = response.angles.rAnkle;
+        } catch (e) {
+            console.warn("Worker execution failed, running heavy physics pipeline on Main Thread...", e);
+            const physicsEngine = new PhysicsEngineHPC();
+            outKinetics = new Float32Array(n * 4);
+            outKnee = new Float32Array(n);
+            outHip = new Float32Array(n);
+            outAnkle = new Float32Array(n);
+            outBack = new Float32Array(n);
+            outLKnee = new Float32Array(n);
+            outRKnee = new Float32Array(n);
+            outLHip = new Float32Array(n);
+            outRHip = new Float32Array(n);
+            outLAnkle = new Float32Array(n);
+            outRAnkle = new Float32Array(n);
+            physicsEngine.computeKinetics(trackingBuffer, outKinetics, barbellMassRef.current);
+            physicsEngine.smoothAngles(trackingBuffer, outKnee, outHip, outAnkle, outBack, outLKnee, outRKnee, outLHip, outRHip, outLAnkle, outRAnkle);
+        }
     } else {
         console.warn("Worker not found, running heavy physics pipeline on Main Thread...");
         outKinetics = new Float32Array(n * 4);
