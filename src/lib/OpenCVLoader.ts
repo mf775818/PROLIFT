@@ -5,7 +5,7 @@ interface ExtendedWindow extends Window {
 class OpenCVLoader {
   private static instance: OpenCVLoader;
   private loadPromise: Promise<any> | null = null;
-  private readonly timeoutMs = 15000;
+  private readonly timeoutMs = 30000; // Increased timeout for mobile devices
 
   private constructor() {}
 
@@ -39,13 +39,22 @@ class OpenCVLoader {
 
       const script = document.createElement("script");
       script.id = "opencv-js-engine";
-      // Load from local static assets for high stability.
+      // Use absolute path for better compatibility across mobile/desktop
       script.src = "/js/opencv.js";
       script.async = true;
       script.crossOrigin = "anonymous";
       script.type = "text/javascript";
 
+      // Configure cv module before loading to handle wasm file location properly
       W.cv = W.cv || {};
+      
+      // Set locateFile to ensure wasm and other assets are loaded from the correct path
+      // This is critical for mobile browsers and different deployment scenarios
+      W.cv.locateFile = (path: string) => {
+        // For embedded wasm (base64), this won't be called, but it's good practice
+        return `/js/${path}`;
+      };
+
       const existingCallback = W.cv.onRuntimeInitialized;
       W.cv.onRuntimeInitialized = () => {
         clearTimeout(timeoutTimer);
